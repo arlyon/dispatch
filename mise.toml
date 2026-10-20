@@ -1,0 +1,19 @@
+[tools]
+rust = "1.97.1"
+node = "22.19.0"
+pnpm = "12.7.0"
+
+[tasks.setup]
+run = "pnpm install --frozen-lockfile"
+
+[tasks.dev]
+run = "pnpm tauri dev"
+
+[tasks.build]
+run = "pnpm tauri build --debug --bundles app"
+
+[tasks.fix]
+run = "cargo fmt --manifest-path src-tauri/Cargo.toml"
+
+[tasks.check]
+run = ["pnpm exec tsc --noEmit", "node --test tests/sticky-geometry.test.mjs", "pnpm build", "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check", "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings", "cargo test --manifest-path src-tauri/Cargo.toml"]
