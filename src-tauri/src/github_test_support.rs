@@ -1,4 +1,4 @@
-//! Fake gh lives wholly in a private temporary directory, never the live queue.
+//! Fake gh state lives in a private temporary directory, never the live queue.
 use serde_json::{Value, json};
 pub struct FakeGh {
     pub directory: tempfile::TempDir,
@@ -8,12 +8,13 @@ impl FakeGh {
     pub fn new(plan: Vec<Value>) -> Self {
         let directory = private_root();
         let path = directory.path().join("fake-gh.cjs");
-        std::fs::write(&path, include_str!("../../tests/fixtures/fake-gh.cjs")).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        }
+        // A stable executable avoids ETXTBSY when parallel child creation
+        // briefly inherits another thread's open fixture-writing descriptor.
+        std::os::unix::fs::symlink(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/fake-gh.cjs"),
+            &path,
+        )
+        .unwrap();
         std::fs::write(
             directory.path().join("plan.json"),
             serde_json::to_vec(&plan).unwrap(),
