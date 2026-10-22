@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import type { AgentState } from "../AgentReport";
 import type { CaptureProgress, GitHubSource, ReviewFile, ReviewRequest, ReviewSummary } from "../types";
 import Icon from "./Icon";
@@ -21,6 +21,26 @@ export default function InboxPanel(props:{
   const [collapsed,setCollapsed]=createSignal<Record<string,boolean>>({}),[expanded,setExpanded]=createSignal<Record<string,boolean>>({});
   const [driftOpen,setDriftOpen]=createSignal<string>(),[driftAbove,setDriftAbove]=createSignal(false);
   const localOrder=new Map<string,number>(),remoteOrder=new Map<string,number>(),nodes=new Map<string,HTMLElement>();
+  let inbox:HTMLElement|undefined;
+  function navigateCards(event:KeyboardEvent){
+    if(event.defaultPrevented||!(event.metaKey||event.ctrlKey)||event.altKey||event.shiftKey||!['ArrowUp','ArrowDown'].includes(event.key))return;
+    const target=event.target;
+    if(target instanceof Element&&target.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"]),.cm-editor,.quiz-panel,[role="dialog"],dialog'))return;
+    if(!inbox||document.querySelector('dialog[open],[role="dialog"]'))return;
+    const cards=[...inbox.querySelectorAll<HTMLElement>('[data-card-key]')].filter(card=>!card.hidden&&card.getClientRects().length>0&&!card.closest('details:not([open])'));
+    const current=cards.findIndex(card=>card.contains(document.activeElement));
+    const next=current<0?(event.key==='ArrowDown'?0:cards.length-1):Math.max(0,Math.min(cards.length-1,current+(event.key==='ArrowDown'?1:-1)));
+    const card=cards[next];
+    if(!card)return;
+    event.preventDefault();
+    card.focus({preventScroll:true});
+    const scroll=inbox.querySelector<HTMLElement>('.inbox-scroll')!;
+    const bounds=scroll.getBoundingClientRect(),rect=card.getBoundingClientRect();
+    const delta=rect.top<bounds.top?rect.top-bounds.top:rect.bottom>bounds.bottom?Math.min(rect.bottom-bounds.bottom,rect.top-bounds.top):0;
+    if(delta)scroll.scrollBy({top:delta,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+  }
+  onMount(()=>window.addEventListener('keydown',navigateCards));
+  onCleanup(()=>window.removeEventListener('keydown',navigateCards));
   let nextLocalRank=0,nextRemoteRank=0;
   let reservedCapture:{url:string;captureId?:string}|undefined;
   const knownPrs=new Map<string,NonNullable<GitHubSource["items"][number]>>();
@@ -127,7 +147,7 @@ export default function InboxPanel(props:{
       <Show when={preparing()} fallback={<Show when={review()&&content()&&opened()}><section class="pr-file-accordion"><div class="files-heading"><strong>Files changed ({content()!.files.length})</strong><Show when={selected()}><span class="stats"><span class="plus">+{content()!.files.reduce((sum,file)=>sum+fileStats(file).added,0)}</span><span class="minus">−{content()!.files.reduce((sum,file)=>sum+fileStats(file).removed,0)}</span></span></Show></div><Show when={selected()}><input class="tree-filter file-filter" aria-label="Filter files" placeholder="Filter files…" value={props.filter} onInput={event=>props.onFilter(event.currentTarget.value)}/></Show><div class="compact-tree file-list"><FileTree directory={tree(content()!.files.filter(file=>!selected()||file.path.toLowerCase().includes(props.filter.toLowerCase())))} depth={0} review={review()!} selected={selected()}/></div><Show when={selected()}><div class="reviewed-count">{props.readPaths.size}/{content()!.files.length} read</div></Show></section></Show>}><Preparation/></Show>
     </article>;
   }
-  return <section class="inbox floating-panel"><header class="inbox-head"><div class="heading">Inbox <span class="count">{allKeys().length-1}</span><span class="spacer"/><button class="iconbtn" aria-label="Refresh inbox" onClick={props.onRefresh}><Icon name="refresh"/></button></div><label class="search"><Icon name="search"/><input aria-label="Search reviews" placeholder="Find a change…" value={search()} onInput={event=>setSearch(event.currentTarget.value)}/></label><div class="filters"><button classList={{active:kind()==="all"}} onClick={()=>setKind("all")}>All</button><button classList={{active:kind()==="ready"}} onClick={()=>setKind("ready")}>Ready</button><button classList={{active:kind()==="reviewing"}} onClick={()=>setKind("reviewing")}>Reviewing</button></div></header>
+  return <section ref={inbox} class="inbox floating-panel"><header class="inbox-head"><div class="heading">Inbox <span class="count">{allKeys().length-1}</span><span class="spacer"/><button class="iconbtn" aria-label="Refresh inbox" onClick={props.onRefresh}><Icon name="refresh"/></button></div><label class="search"><Icon name="search"/><input aria-label="Search reviews" placeholder="Find a change…" value={search()} onInput={event=>setSearch(event.currentTarget.value)}/></label><div class="filters"><button classList={{active:kind()==="all"}} onClick={()=>setKind("all")}>All</button><button classList={{active:kind()==="ready"}} onClick={()=>setKind("ready")}>Ready</button><button classList={{active:kind()==="reviewing"}} onClick={()=>setKind("reviewing")}>Reviewing</button></div></header>
     <div class="inbox-scroll"><div class="source-divider"><SectionHeading label="Local" count={allKeys().indexOf("divider:remote")}/></div><div class="inbox-card-stack"><For each={allKeys()}>{id=>id==="divider:remote"?<div ref={element=>nodes.set(id,element)} class="source-divider remote-divider"><SectionHeading label="Remote" count={props.github?.total==null?"…":allKeys().length-allKeys().indexOf("divider:remote")-1}/><details class="source-details"><summary aria-label="Remote source details"><span aria-hidden="true">…</span><span role="status">{!props.github?"Connecting":props.github.error?props.github.lastSuccess?"Stale":"Unavailable":props.github.polling?"Checking":props.github.partial?"Partial results":""}</span></summary><div class="source-details-body"><p>{props.github?.total??"Unknown"} matching PRs</p><code>{props.github?.query}</code><p>{props.github?.error||(props.github?.partial?"Search incomplete or capped":"Updated-desc · polls every 120 seconds")}</p><Show when={props.github?.lastSuccess}><small>Last success {new Date(props.github!.lastSuccess!*1000).toLocaleString()}</small></Show></div></details></div>:<PRCard id={id}/>}</For></div>
     <details class="archive-section" open={archiveOpen()} onToggle={event=>setArchiveOpen(event.currentTarget.open)}><summary class="source-divider"><SectionHeading label="Archive" count={history().length}/><Icon name="chevron" class={archiveOpen()?"chevron expanded":"chevron"}/></summary><div class="archive-list"><For each={history().map(review=>review.id)}>{id=><PRCard id={id} history={props.reviews.find(review=>review.id===id)!}/>}</For><Show when={!history().length}><p class="empty-inbox">No archived reviews.</p></Show></div></details></div><footer class="inbox-footer"><button disabled={props.busy} onClick={props.onNew}><Icon name="plus"/>Review Dispatch</button></footer></section>;
 }
