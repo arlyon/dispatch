@@ -162,7 +162,9 @@ impl Agents {
             );
         }
         workers.remove(&request.id);
-        let (message, files) = prompt(&request);
+        crate::linked_context::freeze(&root, &request)?;
+        let (mut message, files) = prompt(&request);
+        message.push_str(&crate::linked_context::grounding(&root, &request)?);
         if files.is_empty() {
             return Err("No supported source files in this snapshot".into());
         }

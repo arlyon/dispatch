@@ -8,6 +8,7 @@ mod github;
 mod github_snapshot;
 #[cfg(test)]
 mod github_test_support;
+mod linked_context;
 mod quiz;
 mod quiz_stream;
 pub mod reviews;
@@ -142,6 +143,23 @@ async fn review_context(id: String) -> Result<Option<reviews::ReviewContext>, St
         .map_err(|e| e.to_string())?
 }
 #[tauri::command]
+async fn linked_context_state(id: String) -> Result<linked_context::State, String> {
+    tauri::async_runtime::spawn_blocking(move || linked_context::state(&reviews::root()?, &id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn attach_linked_context(
+    id: String,
+    urls: Vec<String>,
+) -> Result<linked_context::State, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        linked_context::attach(&reviews::root()?, &id, urls)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
 async fn file_identities(id: String) -> Result<std::collections::BTreeMap<String, String>, String> {
     tauri::async_runtime::spawn_blocking(move || reviews::file_identities(&reviews::root()?, &id))
         .await
@@ -260,6 +278,8 @@ pub fn run() {
             open_review,
             review_result,
             review_context,
+            linked_context_state,
+            attach_linked_context,
             file_identities,
             submit_review,
             enqueue_self,
