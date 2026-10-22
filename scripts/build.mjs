@@ -16,7 +16,15 @@ if (!["linux", "darwin"].includes(process.platform)) {
 }
 const dev = args.includes("--dev");
 const debug = dev || args.includes("--debug");
-const run = (command, args) => execFileSync(command, args, { stdio: "inherit" });
+const run = (command, args) => {
+  // With install scripts disabled, pnpm's launcher intentionally has no
+  // shebang. macOS execvp cannot run it directly; a shell can. Arguments stay
+  // positional, never interpolated into shell source.
+  if (command === "pnpm") {
+    return execFileSync("sh", ["-c", 'exec pnpm "$@"', "pnpm", ...args], { stdio: "inherit" });
+  }
+  return execFileSync(command, args, { stdio: "inherit" });
+};
 const profile = debug ? [] : ["--release"];
 
 if (!dev) run("pnpm", ["build"]);

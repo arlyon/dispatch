@@ -28,7 +28,7 @@ test("native packaging stages Ferropi once, normalizes permissions, and propagat
       }
     `);
     helper("rustc", "console.log('host: x86_64-unknown-linux-gnu');");
-    helper("pnpm", `
+    helper("pnpm-script", `
       const fs = require('node:fs');
       const assert = require('node:assert/strict');
       const args = process.argv.slice(2);
@@ -47,7 +47,16 @@ test("native packaging stages Ferropi once, normalizes permissions, and propagat
         if (process.env.FAIL_BUNDLE) process.exit(7);
       }
     `);
-    const env = { ...process.env, PATH: `${join(root, "tools")}:${process.env.PATH}` };
+    // Match pnpm's shebang-less launcher when lifecycle scripts are disabled.
+    const launcher = join(root, "tools/pnpm");
+    writeFileSync(launcher, 'exec "$DISPATCH_TEST_NODE" "$DISPATCH_TEST_PNPM_SCRIPT" "$@"\n');
+    chmodSync(launcher, 0o755);
+    const env = {
+      ...process.env,
+      PATH: `${join(root, "tools")}:${process.env.PATH}`,
+      DISPATCH_TEST_NODE: process.execPath,
+      DISPATCH_TEST_PNPM_SCRIPT: join(root, "tools/pnpm-script"),
+    };
     const run = (extraEnv = {}, args = ["--debug"]) => spawnSync(process.execPath, [join(root, "scripts/build.mjs"), ...args], { cwd: root, env: { ...env, ...extraEnv }, encoding: "utf8" });
     const result = run();
     assert.equal(result.status, 0, result.stderr);
