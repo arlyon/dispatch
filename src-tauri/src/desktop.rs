@@ -192,7 +192,10 @@ struct Controller {
     known: HashSet<String>,
     announced: HashSet<String>,
     attention: bool,
+    #[cfg(not(target_os = "macos"))]
     tray_attention: bool,
+    #[cfg(target_os = "macos")]
+    indicator: crate::tray_indicator::TrayIndicator,
 }
 fn queue_ids(root: &Path) -> Result<HashSet<String>> {
     let mut ids = HashSet::new();
@@ -205,27 +208,55 @@ fn queue_ids(root: &Path) -> Result<HashSet<String>> {
     }
     Ok(ids)
 }
+#[cfg(any(target_os = "macos", test))]
+fn outstanding_count(root: &Path, ids: &HashSet<String>) -> usize {
+    ids.iter()
+        .filter(|id| !root.join(id).join("result.json").exists())
+        .count()
+}
 impl Controller {
+    #[cfg(target_os = "macos")]
+    fn update_tray(&mut self) -> Result<()> {
+        if let Some(icon) = self.indicator.frame(self.attention, Instant::now()) {
+            self.app
+                .tray_by_id("dispatch")
+                .ok_or("Dispatch tray is unavailable")?
+                .set_icon_with_as_template(Some(icon), !self.attention)
+                .map_err(|error| format!("Tray indicator could not be updated: {error}"))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
     fn update_tray(&mut self) -> Result<()> {
         if self.attention != self.tray_attention {
             // One update per state transition; never an animation timer or an
             // automatic retry loop if the native tray rejects an update.
             self.tray_attention = self.attention;
-            #[cfg(target_os = "linux")]
             let icon = if self.attention {
-                tauri::include_image!("icons/tray-attention.png")
+                #[cfg(target_os = "macos")]
+                let attention = tauri::include_image!("icons/tray-macos-attention.png");
+                #[cfg(not(target_os = "macos"))]
+                let attention = tauri::include_image!("icons/tray-attention.png");
+                attention
             } else {
-                tauri::include_image!("icons/tray.png")
+                #[cfg(target_os = "macos")]
+                let idle = tauri::include_image!("icons/tray-template.png");
+                #[cfg(not(target_os = "macos"))]
+                let idle = tauri::include_image!("icons/tray.png");
+                idle
             };
-            #[cfg(not(target_os = "linux"))]
-            let icon = tauri::include_image!("icons/tray-template.png");
             let tray = self
                 .app
                 .tray_by_id("dispatch")
                 .ok_or("Dispatch tray is unavailable")?;
-            if let Err(error) = tray.set_icon(Some(icon)) {
-                return Err(format!("Tray indicator could not be updated: {error}"));
-            }
+            // AppKit tints the idle alpha mask for light/dark menu bars. The
+            // attention artwork is full colour so its pink-red badge survives.
+            // Change both atomically: two separate calls visibly flash on macOS.
+            tray.set_icon_with_as_template(
+                Some(icon),
+                cfg!(target_os = "macos") && !self.attention,
+            )
+            .map_err(|error| format!("Tray indicator could not be updated: {error}"))?;
         }
         Ok(())
     }
@@ -487,7 +518,12 @@ fn hidden_lifetime() -> Duration {
 fn run_controller(mut controller: Controller, receiver: mpsc::Receiver<Event>) {
     let mut last_scan = Instant::now();
     loop {
-        let result = match receiver.recv_timeout(Duration::from_millis(100)) {
+        #[cfg(target_os = "macos")]
+        let animating = controller.indicator.animating();
+        #[cfg(not(target_os = "macos"))]
+        let animating = false;
+        let wait = Duration::from_millis(if animating { 16 } else { 100 });
+        let result = match receiver.recv_timeout(wait) {
             Ok(Event::Activate(activation, reply)) => {
                 let result = controller.activation(activation);
                 if let Some(reply) = reply {
@@ -538,6 +574,15 @@ fn run_controller(mut controller: Controller, receiver: mpsc::Receiver<Event>) {
         if last_scan.elapsed() >= Duration::from_secs(1) {
             match queue_ids(&controller.root) {
                 Ok(ids) => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let count = outstanding_count(&controller.root, &ids);
+                        controller.indicator.set_count(count, Instant::now());
+                        if let Some(tray) = controller.app.tray_by_id("dispatch") {
+                            let tooltip = format!("Dispatch — {count} outstanding reviews");
+                            let _ = tray.set_tooltip(Some(tooltip));
+                        }
+                    }
                     for id in ids
                         .difference(&controller.known)
                         .cloned()
@@ -744,6 +789,12 @@ fn run_resident(
                     let _ = write_frame(&mut stream, &result);
                 }
             });
+            #[cfg(target_os = "macos")]
+            let indicator = {
+                let mut indicator = crate::tray_indicator::TrayIndicator::default();
+                indicator.set_count(outstanding_count(&root, &known), Instant::now());
+                indicator
+            };
             let controller = Controller {
                 app: app.handle().clone(),
                 root,
@@ -758,7 +809,10 @@ fn run_resident(
                 known,
                 announced: HashSet::new(),
                 attention: false,
+                #[cfg(not(target_os = "macos"))]
                 tray_attention: false,
+                #[cfg(target_os = "macos")]
+                indicator,
             };
             sender.send(Event::Activate(initial, None))?;
             std::thread::spawn(move || run_controller(controller, receiver));
@@ -888,6 +942,58 @@ pub fn deliver(id: &str, background: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_tray_artwork_is_monochrome_with_a_static_lower_right_badge() {
+        let idle = tauri::include_image!("icons/tray-template.png");
+        let attention = tauri::include_image!("icons/tray-macos-attention.png");
+        for icon in [&idle, &attention] {
+            assert_eq!((icon.width(), icon.height()), (48, 48));
+            assert!(icon.rgba().chunks_exact(4).any(|p| p[3] == 0));
+            assert!(icon.rgba().chunks_exact(4).any(|p| p[3] == 255));
+        }
+        assert!(idle.rgba().chunks_exact(4).all(|p| p[..3] == [0, 0, 0]));
+        let mut badge_pixels = 0;
+        for (index, pixel) in attention.rgba().chunks_exact(4).enumerate() {
+            if pixel[0] != pixel[1] || pixel[1] != pixel[2] {
+                assert!(index % 48 >= 28 && index / 48 >= 28);
+                if pixel[0] > 200 && pixel[1] < 120 && pixel[2] > 60 && pixel[3] > 200 {
+                    badge_pixels += 1;
+                }
+            } else if pixel[3] > 0 {
+                assert_eq!(pixel[0], pixel[1]);
+                assert_eq!(pixel[1], pixel[2]);
+            }
+        }
+        assert!(
+            badge_pixels > 100,
+            "badge must remain large at menu-bar size"
+        );
+    }
+
+    #[test]
+    fn count_includes_the_whole_queue_and_only_completion_clears_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut ids = HashSet::new();
+        for _ in 0..60 {
+            let id = uuid::Uuid::new_v4().to_string();
+            let directory = root.path().join(&id);
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join("request.json"), b"{}").unwrap();
+            ids.insert(id);
+        }
+        assert_eq!(
+            outstanding_count(root.path(), &queue_ids(root.path()).unwrap()),
+            60
+        );
+        let completed = ids.iter().next().unwrap();
+        fs::write(root.path().join(completed).join("result.json"), b"{}").unwrap();
+        assert_eq!(
+            outstanding_count(root.path(), &queue_ids(root.path()).unwrap()),
+            59
+        );
+    }
+
     #[test]
     fn desktop_flags_are_explicit_and_background_does_not_imply_a_review() {
         assert!(parse_args(&["--bg".into()]).unwrap().background);

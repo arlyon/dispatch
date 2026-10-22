@@ -4,6 +4,8 @@ pub mod desktop;
 mod desktop_ipc;
 mod desktop_policy;
 pub mod reviews;
+#[cfg(any(target_os = "macos", test))]
+mod tray_indicator;
 use serde_json::Value;
 use std::process::{Command, Stdio};
 
