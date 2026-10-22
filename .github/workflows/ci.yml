@@ -26,7 +26,7 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux-x86_64
-          - os: macos-14
+          - os: macos-15
             platform: macos-aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -45,6 +45,8 @@ jobs:
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
         env:
           MISE_NPM_PACKAGE_MANAGER: npm
+      - name: Install Rust check components
+        run: rustup component add rustfmt clippy
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
           cache-on-failure: true
