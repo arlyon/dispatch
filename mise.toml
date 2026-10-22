@@ -1,19 +1,23 @@
 [tools]
 rust = "1.97.1"
 node = "22.19.0"
-pnpm = "12.7.0"
+"npm:pnpm" = "12.7.0"
 
 [tasks.setup]
 run = "pnpm install --frozen-lockfile"
 
 [tasks.dev]
-run = "pnpm tauri dev"
+run = "node scripts/build.mjs --dev"
 
 [tasks.build]
-run = ["cargo build -p ferropi", "pnpm tauri build --debug --bundles app"]
+run = "node scripts/build.mjs --debug"
+
+[tasks.package]
+description = "Build release installers for the current platform"
+run = "node scripts/build.mjs"
 
 [tasks.fix]
-run = "cargo fmt --all"
+run = ["cargo fmt --all", "node scripts/frontend-fingerprint.mjs"]
 
 [tasks.check]
-run = ["pnpm exec tsc --noEmit", "node --test tests/sticky-geometry.test.mjs", "pnpm build", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --all-features -- -D warnings", "cargo test --workspace --all-features"]
+run = ["node scripts/sync-version.mjs --check", "node scripts/frontend-fingerprint.mjs --check", "pnpm exec tsc --noEmit", "node --test tests/*.test.mjs", "pnpm build", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --all-features -- -D warnings", "cargo test --workspace --all-features"]

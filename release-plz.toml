@@ -1,0 +1,24 @@
+[workspace]
+git_only = true
+release_always = false
+semver_check = false
+git_release_enable = false
+
+[[package]]
+name = "dispatch"
+version_group = "dispatch"
+git_tag_name = "v{{ version }}"
+git_release_enable = true
+git_release_draft = true
+changelog_path = "CHANGELOG.md"
+changelog_include = ["ferropi", "ferropi-pi-rpc"]
+
+[[package]]
+name = "ferropi"
+version_group = "dispatch"
+changelog_update = false
+
+[[package]]
+name = "ferropi-pi-rpc"
+version_group = "dispatch"
+changelog_update = false

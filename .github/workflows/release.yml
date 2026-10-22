@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag to rebuild and finish (empty for normal release-plz flow)
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag || github.sha }}
+
+  release:
+    needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.target.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.tag || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        env:
+          MISE_NPM_PACKAGE_MANAGER: npm
+      - name: Create draft release and tags
+        if: inputs.tag == ''
+        id: release
+        uses: release-plz/action@3351daa593482ad9d29b28068192d5515ea18f25 # v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Select the Dispatch release
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RETRY_TAG: ${{ inputs.tag }}
+          RELEASES: ${{ steps.release.outputs.releases }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$RETRY_TAG" ]]; then
+            # Retries must not overwrite assets on an already public release.
+            gh release view "$RETRY_TAG" --json isDraft --jq '.isDraft' | grep -qx true
+            tag="$RETRY_TAG"
+          else
+            tag=$(jq -r '[.[] | select(.package_name == "dispatch")][0].tag // empty' <<< "${RELEASES:-[]}")
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: steps.target.outputs.tag != ''
+        with:
+          pattern: dispatch-*
+          path: installers
+          merge-multiple: true
+      - name: Attach all installers and publish
+        if: steps.target.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Explicit formats prevent accidentally publishing logs or other files.
+          mapfile -d '' assets < <(find installers -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.dmg' \) -print0 | sort -z)
+          for extension in deb rpm AppImage dmg; do
+            find installers -name "*.$extension" -print -quit | grep -q .
+          done
+          # Artifact downloads retain format subdirectories; release assets do not.
+          for asset in "${assets[@]}"; do
+            (cd "$(dirname "$asset")" && sha256sum -- "$(basename "$asset")")
+          done > installers/SHA256SUMS
+          gh release upload "$TAG" "${assets[@]}" installers/SHA256SUMS --clobber
+          gh release edit "$TAG" --draft=false --latest
+
+  release-pr:
+    needs: release
+    if: inputs.tag == ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        env:
+          MISE_NPM_PACKAGE_MANAGER: npm
+      - name: Open or update release PR
+        id: pr
+        uses: release-plz/action@3351daa593482ad9d29b28068192d5515ea18f25 # v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Synchronize desktop version and explicitly request CI
+        if: steps.pr.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.pr }}
+        run: |
+          set -euo pipefail
+          branch=$(jq -r '.head_branch' <<< "$PR")
+          gh auth setup-git
+          git fetch origin "$branch"
+          git checkout -B "$branch" FETCH_HEAD
+          mise exec -- node scripts/sync-version.mjs
+          git add package.json
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit -m 'chore: synchronize desktop release version'
+            git push origin "HEAD:$branch"
+          fi
+          # GITHUB_TOKEN PR/push events do not start CI. workflow_dispatch does.
+          gh workflow run ci.yml --ref "$branch"

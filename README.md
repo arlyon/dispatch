@@ -20,7 +20,29 @@ mise run setup
 mise run dev
 ```
 
-`mise run build` builds `target/debug/ferropi` and creates `target/debug/bundle/macos/Dispatch.app`. Open it and choose **Review Dispatch** to snapshot the build's source checkout from `main` to committed `HEAD`.
+`mise run build` builds a debug desktop and its `ferropi` / `dispatch-review` companions. On macOS it creates `target/debug/bundle/macos/Dispatch.app`; on Linux it creates an RPM under `target/debug/bundle/rpm/`. The unpackaged Linux executable is `target/debug/dispatch`. Choose **Review Dispatch** to snapshot the build's source checkout from `main` to committed `HEAD` (this source-checkout shortcut is for local development, not installed release builds).
+
+### Linux and native Wayland
+
+Linux needs a C/C++ build toolchain, GTK 3 and WebKitGTK 4.1 development libraries. Packaging AppImages also needs `patchelf`; running AppImages may require FUSE 2. The CI workflow lists the Ubuntu 24.04 packages. On Fedora the corresponding development packages include `gtk3-devel`, `webkit2gtk4.1-devel`, `openssl-devel`, and `librsvg2-devel`.
+
+GTK selects the display backend normally. To require native Wayland with no XWayland fallback after building:
+
+```sh
+env -u DISPLAY GDK_BACKEND=wayland target/debug/dispatch
+```
+
+Use `mise run package` for optimized release installers: **DEB, RPM and AppImage** on Linux x86-64, or **APP and DMG** on macOS (CI builds Apple Silicon). Artifacts are under `target/release/bundle/`. The build stages a target-suffixed Ferropi executable in ignored `src-tauri/binaries/`; Tauri includes the review CLI from its own crate. No cross-compilation is implied. Bundled companions remain separate processes. Dispatch prefers `FERROPI_BIN`, then `ferropi` beside its own executable, then `ferropi` on `PATH`. Pi itself is not bundled: install it separately and keep `pi` on the desktop's `PATH`, or set `PI_BINARY`.
+
+### CI and releases
+
+GitHub Actions checks and packages Linux x86-64 and macOS ARM64 for pull requests, manual CI runs, and every `main` push through the release workflow. CI installers are retained for 14 days. macOS builds are ad-hoc signed, **not Developer ID signed or notarized**; Gatekeeper may block downloaded builds. Windows packaging is not supported yet because Ferropi uses Unix sockets.
+
+`release-plz.toml` uses git-only versioning: nothing is published to crates.io. Release-plz maintains a release PR and changelog; merging that PR permits release creation. Cargo's workspace version is authoritative; `scripts/sync-version.mjs` copies it to `package.json`, and Tauri reads that file. The three Rust packages share a release version group, with companion tags and one Dispatch GitHub release (`vX.Y.Z`). Because release-plz compares Cargo package files, `mise run fix` also refreshes the tracked `src-tauri/frontend.sha256` fingerprint of frontend/build inputs. Include that file with UI changes; `mise run check` rejects a stale fingerprint so frontend-only changes cannot silently miss a release. Version-only bumps are excluded from the fingerprint.
+
+Repository administrators must allow **GitHub Actions to create and approve pull requests** in Actions settings (the workflow only creates/updates PRs; it does not approve or merge them). No PAT or crates.io token is required. Release jobs receive narrowly scoped write permissions; ordinary CI is read-only. The generated release PR is explicitly sent through CI using `workflow_dispatch`, because PR/push events made with `GITHUB_TOKEN` do not trigger workflows.
+
+A release starts as a draft, receives all four installer formats and `SHA256SUMS`, then becomes public. Packaging runs in the same workflow before release-plz, rather than depending on a bot-created tag starting another workflow. To recover an interrupted upload/publication, manually run **Release** with the existing draft's `tag`: it rebuilds that tag, replaces draft assets and publishes only after every format is present. It refuses to overwrite an already public release. To roll back a broken release, an administrator can mark it as a draft; fixes should ship in a new version. No workflow auto-merges release PRs.
 
 On macOS the native traffic lights overlay the 48px app bar instead of occupying a separate title strip. Space is reserved for them; the app-bar background/title can drag the window. Buttons remain interactive, native controls/close guards remain native, and other platforms retain their normal decorations.
 
@@ -84,7 +106,7 @@ The guide appears at the top of Chat and has a **Review guide & context** shortc
 
 ### Reviewer ownership and recovery
 
-The desktop launches `ferropi mount`, not Pi directly. Set `FERROPI_BIN` to this workspace's `target/debug/ferropi` executable (absolute path) and `PI_BINARY` to the Pi executable when they are not on the desktop process's PATH. **Review Dispatch** creates an app-owned review and starts its reviewer automatically. CLI callers default to caller-owned: no reviewer is started until **Start Pi reviewer** is clicked. Opt-in persists for that review. An enabled reviewer uses `reviews/<UUID>/agent.jsonl`; reopening a successful report hydrates native Pi history rather than running it again. **Retry Pi review · same session** restarts failed attempts without deleting history. Session identity is still per request UUID; stable PR identity across separate enqueues/revisions is unfinished.
+The desktop launches `ferropi mount`, not Pi directly. Builds made through mise include Ferropi beside the desktop executable. Set `FERROPI_BIN` to an absolute executable path to override that companion, and `PI_BINARY` to the Pi executable when it is not on the desktop process's PATH. **Review Dispatch** creates an app-owned review and starts its reviewer automatically. CLI callers default to caller-owned: no reviewer is started until **Start Pi reviewer** is clicked. Opt-in persists for that review. An enabled reviewer uses `reviews/<UUID>/agent.jsonl`; reopening a successful report hydrates native Pi history rather than running it again. **Retry Pi review · same session** restarts failed attempts without deleting history. Session identity is still per request UUID; stable PR identity across separate enqueues/revisions is unfinished.
 
 The first reviewer receives only supplied source snapshots, with a 96 KB source-text budget. Binary/unavailable entries, lockfiles and unsupported file types are omitted and the scope is visible in Chat. Pi tools, MCP, extensions, skills, prompt templates and context-file discovery are disabled; the model cannot read other files, run tests, edit code or publish anything. Its report is static analysis, not verified test results.
 

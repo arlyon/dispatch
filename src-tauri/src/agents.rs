@@ -181,13 +181,33 @@ impl Agents {
     }
 }
 
+fn ferropi_executable(
+    override_path: Option<std::ffi::OsString>,
+    current_exe: Option<&std::path::Path>,
+) -> PathBuf {
+    if let Some(path) = override_path {
+        return path.into();
+    }
+    if let Some(sibling) = current_exe
+        .and_then(std::path::Path::parent)
+        .map(|directory| directory.join("ferropi"))
+        .filter(|path| path.is_file())
+    {
+        return sibling;
+    }
+    "ferropi".into()
+}
+
 async fn run(
     app: &AppHandle,
     state: &Arc<Mutex<AgentState>>,
     request: &ReviewRequest,
     prompt: &str,
 ) -> Result<(), String> {
-    let executable = std::env::var_os("FERROPI_BIN").unwrap_or_else(|| "ferropi".into());
+    let executable = ferropi_executable(
+        std::env::var_os("FERROPI_BIN"),
+        std::env::current_exe().ok().as_deref(),
+    );
     let pi = std::env::var_os("PI_BINARY").unwrap_or_else(|| "pi".into());
     let mut command = tokio::process::Command::new(executable);
     command.arg("--pi").arg(pi);
@@ -311,6 +331,30 @@ async fn run(
 mod tests {
     use super::*;
     use crate::reviews::{ReviewFile, Source};
+    #[test]
+    fn ferropi_resolution_preserves_overrides_and_prefers_packaged_sibling() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("dispatch");
+        let sibling = directory.path().join("ferropi");
+        assert_eq!(ferropi_executable(None, None), PathBuf::from("ferropi"));
+        assert_eq!(
+            ferropi_executable(None, Some(&executable)),
+            PathBuf::from("ferropi")
+        );
+        std::fs::write(&sibling, "fixture").unwrap();
+        assert_eq!(ferropi_executable(None, Some(&executable)), sibling);
+        assert_eq!(
+            ferropi_executable(Some("/explicit/ferropi".into()), Some(&executable)),
+            PathBuf::from("/explicit/ferropi")
+        );
+        std::fs::remove_file(&sibling).unwrap();
+        std::fs::create_dir(&sibling).unwrap();
+        assert_eq!(
+            ferropi_executable(None, Some(&executable)),
+            PathBuf::from("ferropi")
+        );
+    }
+
     #[test]
     fn failed_history_is_retryable_not_a_cached_report() {
         for reason in ["error", "aborted"] {

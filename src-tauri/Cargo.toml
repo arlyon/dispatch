@@ -1,7 +1,9 @@
 [package]
 name = "dispatch"
 default-run = "dispatch"
-version = "0.1.0"
+version.workspace = true
+publish = false
+license.workspace = true
 description = "Agent-assisted change review inbox"
 edition = "2024"
 
