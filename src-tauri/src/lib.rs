@@ -1,8 +1,13 @@
 mod agents;
 mod attachments;
+pub mod desktop;
+mod desktop_ipc;
+mod desktop_policy;
 mod quiz;
 mod quiz_stream;
 pub mod reviews;
+#[cfg(any(target_os = "macos", test))]
+mod tray_indicator;
 use serde_json::Value;
 use std::process::{Command, Stdio};
 use tauri::Manager;
@@ -129,6 +134,9 @@ async fn start_review_agent(
     id: String,
     agents: tauri::State<'_, agents::Agents>,
 ) -> Result<agents::AgentState, String> {
+    if desktop::is_gui(&app) {
+        return desktop::rpc(&app, desktop_ipc::Rpc::StartAgent { id }).await;
+    }
     let (request, root) = tauri::async_runtime::spawn_blocking(move || {
         let root = reviews::root()?;
         let request = reviews::read_request(&root, &id)?;
@@ -143,8 +151,15 @@ async fn start_review_agent(
     agents.start(app, request, root)
 }
 #[tauri::command]
-fn list_review_agents(agents: tauri::State<'_, agents::Agents>) -> Vec<agents::AgentState> {
-    agents.snapshots()
+async fn list_review_agents(
+    app: tauri::AppHandle,
+    agents: tauri::State<'_, agents::Agents>,
+) -> Result<Vec<agents::AgentState>, String> {
+    if desktop::is_gui(&app) {
+        desktop::rpc(&app, desktop_ipc::Rpc::ListAgents).await
+    } else {
+        Ok(agents.snapshots())
+    }
 }
 
 #[tauri::command]
@@ -175,7 +190,7 @@ async fn end_quiz(
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(agents::Agents::default())
         .manage(quiz::Quizzes::default())
         .on_window_event(|window, event| {
@@ -199,10 +214,18 @@ pub fn run() {
             list_review_agents,
             start_quiz,
             answer_quiz,
-            end_quiz
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running Dispatch");
+            end_quiz,
+            desktop::desktop_bootstrap,
+            desktop::desktop_ready,
+            desktop::desktop_hide,
+            desktop::desktop_checkpoint,
+            desktop::desktop_checkpoint_failed,
+            desktop::desktop_quit
+        ]);
+    if let Err(error) = desktop::run(builder, tauri::generate_context!()) {
+        eprintln!("Dispatch: {error}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]

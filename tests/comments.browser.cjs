@@ -10,9 +10,9 @@ const assert = require("node:assert/strict");
 const cwd = path.resolve(__dirname, "..");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-comments-"));
 fs.chmodSync(temporary, 0o700);
-const binary = path.join(cwd, "target/debug/dispatch-review");
+const binary = path.join(process.env.CARGO_TARGET_DIR || path.join(cwd, "target"), "debug/dispatch-review");
 const request = process.argv[2] ? JSON.parse(fs.readFileSync(process.argv[2],"utf8")) : JSON.parse(execFileSync(binary, [cwd, "main", "HEAD"], {
-  env: { ...process.env, DISPATCH_REVIEW_DIR: temporary }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  env: { ...process.env, DISPATCH_REVIEW_DIR: temporary, DISPATCH_BIN: path.join(temporary, "no-native-gui") }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
 }));
 const requests = [request, { ...request, id: randomUUID(), title: "Other own-source snapshot" }];
 
@@ -53,6 +53,8 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
           }
           if(command==='save_attachment'){window.__images.push(args);await new Promise(resolve=>setTimeout(resolve,80));return {path:`/browser/Application Support/reviews/${args.id}/attachments/00000000-0000-4000-8000-000000000001.png`,name:'00000000-0000-4000-8000-000000000001.png'};}
           if(command==='read_attachment'){return {mime:'image/png',bytes:Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jKFkAAAAASUVORK5CYII='),char=>char.charCodeAt(0))};}
+          if (command === "desktop_bootstrap") return { checkpoint: null, review: null };
+          if (["desktop_ready", "desktop_checkpoint", "desktop_hide", "desktop_quit", "desktop_checkpoint_failed"].includes(command)) return;
           if (command === "list_review_agents") return [];
           if (command === "start_review_agent") {
             starts[args.id] = (starts[args.id] || 0) + 1;

@@ -26,14 +26,18 @@ fn run() -> Result<(), String> {
         return wait_for_feedback(&reviews::root()?, &args[1]);
     }
     if args.len() < 3 {
-        return Err("Usage: dispatch-review REPOSITORY BASE HEAD [--context FILE] [--wait]".into());
+        return Err(
+            "Usage: dispatch-review REPOSITORY BASE HEAD [--context FILE] [--wait] [--bg]".into(),
+        );
     }
     let mut wait = false;
+    let mut background = false;
     let mut context = None;
     let mut flags = args[3..].iter();
     while let Some(flag) = flags.next() {
         match flag.as_str() {
             "--wait" if !wait => wait = true,
+            "--bg" if !background => background = true,
             "--context" if context.is_none() => {
                 let path = flags.next().ok_or("--context requires a JSON file")?;
                 let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -57,6 +61,9 @@ fn run() -> Result<(), String> {
         context.as_ref(),
     )?;
     eprintln!("Queued {} in {}", request.id, root.display());
+    if let Err(error) = dispatch_lib::desktop::deliver(&request.id, background) {
+        eprintln!("{error}. The immutable review is still queued.");
+    }
     if wait {
         wait_for_feedback(&root, &request.id)?;
     } else {

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="150 160 990 990" fill="none">
+<title>Dispatch code-beak bird</title>
+<desc>Orange walking bird with a dark wing and paired angle-bracket beak. Tray export trims empty margins; the original artwork is unchanged.</desc>
+<g id="legs" stroke="#0E1B2A" stroke-width="40" stroke-linecap="round" stroke-linejoin="round">
+<path id="back-leg" d="M505 899 L393 1033 H511"/>
+<path id="front-leg" d="M657 892 Q704 922 750 977 L817 910"/>
+</g>
+<path id="body" fill="#FF6B26" d="M595 341 C547 294 455 239 404 253 C366 263 368 302 404 327 C422 340 444 350 467 358 C434 353 400 357 381 373 C357 394 374 423 402 434 C435 447 477 438 515 416 C478 463 461 510 450 561 C442 599 434 628 422 651 C390 713 362 767 319 790 C278 810 238 802 205 807 C175 811 166 831 181 855 C216 912 291 930 365 881 C432 916 506 929 574 916 C700 903 786 842 835 739 C861 685 874 612 888 550 C875 531 860 514 852 499 C871 481 900 457 912 435 C898 377 851 338 802 320 C733 295 658 308 595 341 Z"/>
+<path id="wing" fill="#0E1B2A" d="M218 663 C331 649 450 634 563 620 C609 614 639 623 650 650 C668 699 621 769 561 804 C494 843 418 845 354 813 C336 804 320 795 299 787 C253 768 208 734 192 698 C180 674 194 666 218 663 Z"/>
+<path id="eye-white" fill="#FFFFFF" d="M709 412 C665 412 633 444 628 488 C620 535 644 576 685 586 C727 597 766 571 783 533 C803 487 783 438 749 421 C736 415 723 412 709 412 Z"/>
+<path id="pupil" fill="#0E1B2A" d="M719 447 C741 436 767 441 781 458 C799 483 797 521 780 547 C760 564 728 558 706 537 L721 517 L695 517 C690 497 695 478 706 463 C714 471 724 471 728 465 C731 459 726 452 719 447 Z"/>
+<path id="eyebrow" d="M613 437 C634 405 662 386 695 382" stroke="#0E1B2A" stroke-width="30" stroke-linecap="round"/>
+<g id="code-beak" stroke="#0E1B2A" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+<path id="open-bracket" d="M939 433 L852 499 L939 565"/>
+<path id="close-bracket" d="M1019 433 L1091 499 L1019 565"/>
+</g>
+</svg>

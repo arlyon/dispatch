@@ -1,17 +1,18 @@
 // Own-source snapshot; native IPC is mocked. No live queue writes or model calls.
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const {spawn}=require('node:child_process'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const cwd=path.resolve(__dirname,'..');
+const cwd=path.resolve(__dirname,'..'),port=process.env.DISPATCH_TEST_PORT||'14692',origin=`http://127.0.0.1:${port}`;
 const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 (async()=>{
- const server=spawn('pnpm',['exec','vite','--host','127.0.0.1','--port','14690','--strictPort'],{cwd,stdio:'ignore'});let browser;
+ const server=spawn('pnpm',['exec','vite','--host','127.0.0.1','--port',port,'--strictPort'],{cwd,stdio:'ignore'});let browser;
  try{
-  for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:14690')).ok)break;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}
+  for(let i=0;i<100;i++){try{if((await fetch(origin)).ok)break;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}
   browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({viewport:{width:1700,height:1100}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.addInitScript(request=>{
    const callbacks=new Map(),listeners=new Map();let next=1,quizCount=0,textCount=0;
    const otherReview={...request,id:crypto.randomUUID(),title:'Other own-source snapshot',files:request.files.filter(file=>file.path!=='src/App.tsx')};window.__otherReviewId=otherReview.id;
-   window.__answers=[];window.__starts=[];window.__ends=[];window.__submitted=[];window.__closeCalls=[];window.__destroyCalls=[];
+   window.__answers=[];window.__starts=[];window.__ends=[];window.__submitted=[];window.__closeCalls=[];window.__destroyCalls=[];window.__hideCalls=[];window.__checkpointFailures=[];
+   window.__desktopCheckpoint=token=>{const id=listeners.get('desktop-checkpoint');callbacks.get(id)?.({event:'desktop-checkpoint',id:1,payload:token});};
    window.__emitAgent=payload=>{const id=listeners.get('review-agent');callbacks.get(id)?.({event:'review-agent',id:1,payload});};
    window.__emitQuiz=patch=>{
     if('text' in patch){const segments=[...window.__quiz.segments],last=segments.at(-1);if(last?.kind==='text')segments[segments.length-1]={...last,text:patch.text};else segments.push({kind:'text',id:'text-'+(++textCount),text:patch.text});patch={...patch,segments};delete patch.text;}
@@ -20,6 +21,10 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:callback=>{const id=next++;callbacks.set(id,callback);return id;},invoke:async(command,args)=>{
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}
     if(command==='plugin:event|unlisten')return;
+    if(command==='desktop_bootstrap')return {checkpoint:JSON.parse(sessionStorage.getItem('desktop-checkpoint')||'null'),review:null};
+    if(command==='desktop_hide'){window.__hideCalls.push(args);return;}
+    if(command==='desktop_checkpoint_failed'){window.__checkpointFailures.push(args);return;}
+    if(['desktop_ready','desktop_checkpoint','desktop_quit'].includes(command))return;
     if(command==='plugin:window|close'){window.__closeCalls.push(args);await callbacks.get(listeners.get('tauri://close-requested'))({event:'tauri://close-requested',id:1,payload:{}});return;}
     if(command==='plugin:window|destroy'){window.__destroyCalls.push(args);return;}
     if(command==='list_reviews')return [request,otherReview].map(review=>({id:review.id,title:review.title,source:review.source,fileCount:review.files.length,complete:window.__submitted.some(submitted=>submitted.id===review.id)}));
@@ -51,7 +56,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
     throw Error('Unexpected native command: '+command);
    }};
   },request);
-  await page.goto('http://127.0.0.1:14690');await page.getByRole('button',{name:'Quiz me',exact:true}).waitFor();
+  await page.goto(origin);await page.getByRole('button',{name:'Quiz me',exact:true}).waitFor();
   assert.ok(await page.locator('.original-chat .reviewer-offer').evaluate(el=>el===el.parentElement.lastElementChild),'reviewer offer is the last conversation item');
   await page.emulateMedia({reducedMotion:'reduce'});await page.getByLabel('Comment placement',{exact:true}).selectOption('inline');
   await page.locator('.original-chat .conversation').getByRole('button',{name:'Go to src/App.tsx:2',exact:true}).click();await page.waitForTimeout(500);
@@ -73,6 +78,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
   await page.evaluate(()=>window.__releaseQuizStart());await page.getByRole('region',{name:'Quiz',exact:true}).waitFor();
   assert.equal(await page.evaluate(()=>window.__quiz.requestId),request.id);
   await page.getByText('Pi is preparing a question…',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Answer',exact:true}).count(),0,'partial tool arguments do not expose an answer form');
+  await page.evaluate(()=>window.__desktopCheckpoint(42));await page.waitForFunction(()=>window.__checkpointFailures.some(call=>call.token===42));assert.equal(await page.evaluate(()=>window.__hideCalls.length),0,'active quiz prevents GUI retirement');
   await draft.focus();await draft.evaluate(el=>el.setSelectionRange(5,5));
   for(const text of ['Look at','Look at the pinned','Look at the pinned change.']){await page.evaluate(text=>window.__emitQuiz({text}),text);await page.waitForTimeout(60);}
   assert.ok(await draft.evaluate(el=>document.activeElement===el&&el.selectionStart===5&&el===window.__draft),'progressive preparation never steals source caret');
@@ -165,7 +171,12 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
   assert.ok(await page.evaluate(()=>window.__starts.every(start=>!JSON.stringify(start.saved).includes('Quiz summary')&&!JSON.stringify(start.saved).includes('An answer with no assessment'))),'main run summaries do not become source-agent quiz context');
   const submitted=await page.evaluate(()=>window.__submitted[0].feedback);assert.equal(submitted.comments.length,1);assert.equal(submitted.comments[0].body,'Saved human note');assert.ok(!JSON.stringify(submitted).includes('assessment')&&!JSON.stringify(submitted).includes('Agent explicitly')&&!JSON.stringify(submitted).includes('Quiz summary')&&!JSON.stringify(submitted).includes('An answer with no assessment'),'quiz verdicts/answers never become submitted review feedback');
   await page.getByText('Archived feedback · read-only',{exact:true}).waitFor();assert.equal(await page.locator('.original-chat .reviewer-offer').count(),0,'archived request without an agent never shows the offer');
-  await page.waitForFunction(()=>window.__destroyCalls.length===1);assert.equal(await page.evaluate(()=>window.__closeCalls.length),1,'successful final submit requests normal close exactly once');
+  await page.waitForFunction(()=>window.__hideCalls.length===1);assert.equal(await page.evaluate(()=>window.__closeCalls.length),1,'successful final submit requests normal close exactly once');
+  assert.equal(await page.evaluate(()=>window.__destroyCalls.length),0,'normal close preserves the resident-owned checkpoint instead of destroying the GUI');
+  const returnedQuizIds=await runSummaries.evaluateAll(elements=>elements.map(el=>el.dataset.quizRunId));
+  await page.evaluate(()=>sessionStorage.setItem('desktop-checkpoint',JSON.stringify(window.__hideCalls[0].checkpoint)));
+  await page.reload();await page.getByRole('textbox',{name:'Final summary',exact:true}).waitFor();
+  assert.deepEqual(await runSummaries.evaluateAll(elements=>elements.map(el=>el.dataset.quizRunId)),returnedQuizIds,'resident bootstrap restores the completed quiz summaries');
   assert.deepEqual(errors,[]);console.log('PASS reviewer offer always last after quiz summaries, unchanged agent/retry/archive availability, chronological answer/text segments, stable assessment patches, once-only snapshot-scoped run summaries at main chat end, confirmed End counts and review-feedback isolation, progressive feedback/preparation with stable typing, explicit per-answer pass/fail/missing widgets isolated from review submission, delayed review-navigation ownership race, End then navigation, quiz right-bar lifecycle, source/quiz caret, saved-only context, real answer routing shape, failure/cancel, retained final feedback, preserved review DOM/drafts/scroll');
  }finally{await browser?.close();server.kill();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
