@@ -12,7 +12,7 @@ Configuration can be performed from Linux. Signing, Apple notarization tooling a
 - The source ref is resolved in an unprivileged job, and the credential-bearing job checks out that exact SHA. The environment link identifies that commit; it is not an approval step.
 - Run only trusted, reviewed source. Its build scripts run in the signing job and can access that job's signing identity.
 - Missing credentials, the wrong certificate type/team, rejected notarization, missing tickets or failed Gatekeeper assessment fail the job. There is no ad-hoc fallback.
-- Private files are confined to a mode-0700 runner directory. Cleanup restores the original keychain search list and removes credentials, including on failure. No private material is uploaded as an artifact.
+- Private files are confined to a mode-0700 runner directory. OpenSSL 3 checks the P12/password before import; temporary PEM key/certificate files avoid macOS's PBES2-P12 import incompatibility without weakening the original archive encryption. Plaintext key files are removed immediately after keychain import. Final cleanup restores the original keychain search list and removes remaining credentials, including on failure. No private material is uploaded as an artifact.
 
 ## One-time provisioning
 

@@ -15,7 +15,12 @@ function fixture() {
     chmodSync(path, 0o755);
   };
   helper("uname", "console.log('Darwin');");
-  helper("openssl", "if(args[0]==='rand')console.log('fixture-keychain-password');");
+  helper("openssl", `
+    if(args[0]==='version')console.log('OpenSSL 3.6 fixture');
+    if(args[0]==='rand')console.log('fixture-keychain-password');
+    if(args[0]==='pkcs12'&&process.env.FAIL_P12)process.exit(1);
+    if(args.includes('-out'))fs.writeFileSync(args[args.indexOf('-out')+1],args.includes('-nokeys')?'-----BEGIN CERTIFICATE-----\\nfixture\\n-----END CERTIFICATE-----\\n':'fixture');
+  `);
   helper("security", `
     fs.appendFileSync(process.env.TEST_SECURITY_LOG,JSON.stringify(args)+'\\n');
     if(args[0]==='list-keychains'&&!args.includes('-s'))console.log('  "/tmp/login with spaces.keychain-db"');
@@ -68,6 +73,8 @@ test("install selects a valid Developer ID team identity and cleanup restores ke
     assert.ok(!config.includes("fixture-p8") && !config.includes("fixture-password") && !config.includes("fixture-keychain-password"));
     assert.equal(statSync(join(f.root, "dispatch-signing")).mode & 0o077, 0);
     assert.equal(statSync(join(f.root, "dispatch-signing/AuthKey_1234567890.p8")).mode & 0o077, 0);
+    assert.equal(existsSync(join(f.root, "dispatch-signing/private-key.pem")), false);
+    assert.equal(existsSync(join(f.root, "dispatch-signing/import-key.pem")), false);
     assert.equal(f.run(["cleanup"]).status, 0);
     assert.equal(existsSync(join(f.root, "dispatch-signing")), false);
     const commands = readFileSync(f.env.TEST_SECURITY_LOG, "utf8").trim().split("\n").map(JSON.parse);
@@ -86,6 +93,17 @@ test("an iOS certificate or wrong team never silently falls back to ad-hoc signi
       assert.equal(f.run(["cleanup"]).status, 0);
     } finally { f.close(); }
   }
+});
+
+test("invalid P12 credentials fail before key import and never export signing environment", () => {
+  const f = fixture();
+  try {
+    assert.notEqual(f.run(["install"], { FAIL_P12: "1" }).status, 0);
+    assert.equal(existsSync(f.env.GITHUB_ENV), false);
+    const commands = readFileSync(f.env.TEST_SECURITY_LOG, "utf8").trim().split("\n").map(JSON.parse);
+    assert.ok(!commands.some(args => args[0] === "import"));
+    assert.equal(f.run(["cleanup"]).status, 0);
+  } finally { f.close(); }
 });
 
 test("cleanup removes private files even when restoring keychain search fails", () => {

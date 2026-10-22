@@ -43,12 +43,33 @@ Path(sys.argv[1]).write_text(json.dumps(original))
 PY
     printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$work/certificate.p12"
     printf '%s' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$work/AuthKey_$APP_STORE_CONNECT_KEY_ID.p8"
-    openssl pkey -in "$work/AuthKey_$APP_STORE_CONNECT_KEY_ID.p8" -noout >/dev/null
-    password=$(openssl rand -hex 32)
+    crypto=$(command -v openssl)
+    if [[ "$("$crypto" version)" != 'OpenSSL 3.'* ]]; then
+      crypto="$(brew --prefix openssl@3)/bin/openssl"
+    fi
+    [[ -x "$crypto" ]] || { echo 'OpenSSL 3 is required to read the signing archive.' >&2; exit 1; }
+    "$crypto" pkey -in "$work/AuthKey_$APP_STORE_CONNECT_KEY_ID.p8" -noout >/dev/null
+    "$crypto" pkcs12 -in "$work/certificate.p12" -passin env:MACOS_CERTIFICATE_PASSWORD -info -noout >/dev/null 2>&1
+    # Keep the original strong P12 encryption. Apple's native PKCS12 importer
+    # can reject PBES2 archives; import protected temporary PEM files instead.
+    "$crypto" pkcs12 -in "$work/certificate.p12" -passin env:MACOS_CERTIFICATE_PASSWORD -nocerts -noenc -out "$work/private-key.pem"
+    "$crypto" pkey -in "$work/private-key.pem" -traditional -out "$work/import-key.pem"
+    "$crypto" pkcs12 -in "$work/certificate.p12" -passin env:MACOS_CERTIFICATE_PASSWORD -nokeys -out "$work/certificate-bags.pem"
+    python3 - "$work/certificate-bags.pem" "$work/certificates.pem" <<'PY'
+import re, sys
+from pathlib import Path
+blocks = re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----', Path(sys.argv[1]).read_text(), re.S)
+if not blocks:
+    raise SystemExit('Signing archive contains no certificates')
+Path(sys.argv[2]).write_text('\n'.join(blocks) + '\n')
+PY
+    password=$("$crypto" rand -hex 32)
     security create-keychain -p "$password" "$keychain"
     security set-keychain-settings -lut 7200 "$keychain"
     security unlock-keychain -p "$password" "$keychain"
-    security import "$work/certificate.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -k "$keychain" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+    security import "$work/import-key.pem" -f openssl -t priv -k "$keychain" -T /usr/bin/codesign -T /usr/bin/security >/dev/null
+    security import "$work/certificates.pem" -f pemseq -t cert -k "$keychain" >/dev/null
+    rm -- "$work/private-key.pem" "$work/import-key.pem"
     security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
     python3 - "$work/keychains.json" "$keychain" <<'PY'
 import json, subprocess, sys
