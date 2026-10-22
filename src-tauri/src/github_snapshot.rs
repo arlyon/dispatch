@@ -465,7 +465,12 @@ mod tests {
         assert_eq!(first.files[0].before, "old();\n");
         assert_eq!(first.files[0].after, "new_b();\n");
         assert!(first.source.repo.is_dir());
-        assert!(first.source.repo.starts_with(root.path()));
+        assert!(
+            first
+                .source
+                .repo
+                .starts_with(root.path().canonicalize().unwrap())
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

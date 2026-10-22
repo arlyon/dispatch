@@ -294,6 +294,12 @@ mod tests {
     use super::*;
     fn run(repo: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+            ])
             .arg("-C")
             .arg(repo)
             .args(args)
