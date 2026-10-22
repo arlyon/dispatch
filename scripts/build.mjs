@@ -53,6 +53,8 @@ const icons = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "
 // generated binaries to exist in a fresh checkout.
 // Tauri already bundles dispatch-review as another binary in its own crate.
 const config = { bundle: { externalBin: [`${staging}/ferropi`], icon: icons } };
+// PR builds remain secret-free; trusted builds can produce updater signatures.
+if (process.env.TAURI_SIGNING_PRIVATE_KEY) config.bundle.createUpdaterArtifacts = true;
 if (!dev) config.build = { beforeBuildCommand: "" };
 const bundles = process.platform === "darwin" ? (debug ? "app" : "app,dmg") : (debug ? "rpm" : "deb,rpm,appimage");
 const configArgs = ["--config", JSON.stringify(config)];

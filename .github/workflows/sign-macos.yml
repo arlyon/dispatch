@@ -18,6 +18,10 @@ on:
         required: true
       APP_STORE_CONNECT_PRIVATE_KEY:
         required: true
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: true
 
 permissions:
   contents: read
@@ -68,6 +72,9 @@ jobs:
       - name: Build, sign and notarize the application
         # Tauri signs all bundled executables and notarizes/staples the app.
         # Missing credentials are an error; never supply the ad-hoc '-' identity.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: mise run package
       - name: Notarize and staple the final disk image
         run: |
@@ -86,7 +93,20 @@ jobs:
           if result.get('status') != 'Accepted':
               raise SystemExit('DMG notarization was not accepted; submission ' + str(result.get('id', 'unknown')))
           PY
-          xcrun stapler staple "${images[0]}"
+          # EX_NOHOST (68) is a transient ticket-service/network failure.
+          # Never turn a rejected ticket or a failed final validation into success.
+          status=0
+          for delay in 0 15 30; do
+            sleep "$delay"
+            if xcrun stapler staple "${images[0]}"; then
+              status=0
+              break
+            else
+              status=$?
+            fi
+            [[ $status -eq 68 ]] || exit "$status"
+          done
+          [[ $status -eq 0 ]]
       - name: Verify nested signatures, tickets and Gatekeeper acceptance
         run: |
           set -euo pipefail
@@ -106,7 +126,10 @@ jobs:
           name: dispatch-macos-aarch64-signed
           if-no-files-found: error
           retention-days: 14
-          path: target/release/bundle/dmg/*.dmg
+          path: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/macos/*.app.tar.gz.sig
       - name: Remove signing credentials and restore keychain search list
         if: always()
         run: bash scripts/macos-signing.sh cleanup

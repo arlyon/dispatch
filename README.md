@@ -175,6 +175,16 @@ Preview limits: individual sides over 1 MB and binary/submodule entries have exp
 
 `tests/pr-polling.browser.cjs <own-source-request.json>` covers source count/query/stale/empty/partial state and stable typing with mocked IPC. `tests/pr-card.browser.cjs <own-source-request.json>` exercises the actual production card renderer and motion: same-node FIFO handoff, concurrent height/travel, real-data completion, natural two-/four-file trees, reduced motion, pinned drift/Refresh, drafts and navigation/quiz ownership. This is production UI proof with mocked IPC, not prototype or native/live capture proof. Rust fake-gh tests cover exact query/pagination, pinned blobs and progress, materialized-only verified head reads, unknown failures, limits and owned subprocess cancellation. Cmd/Ctrl-Up/Down focuses the adjacent visible Inbox card in display order, including expanded Archive; Enter/Space opens the focused card. Navigation only scrolls Inbox and never captures or changes the active review. Text editors, quiz controls, dialogs and Alt/Shift combinations retain their native shortcuts. `tests/card-navigation.browser.cjs <own-source-request.json>` covers this focus-only path on isolated port 14729. The explicitly ignored `github::tests::live_approved_search` is a bounded read-only live metadata check, not native GUI or live diff proof.
 
+## Application updates
+
+Packaged RPM, AppImage and macOS app builds use Tauri's official updater. Dispatch checks on resident startup and every six hours; **Updates → Check now** checks manually. The signed `latest.json` feed on GitHub Releases selects the matching package format, with no cross-format fallback. There is no Dispatch DNF repository or repository lifecycle hook.
+
+**Install & restart** is explicit. Downloads are verified before the resident requests a fresh GUI quit/checkpoint decision. Unsubmitted feedback, unfinished quiz work, restoration failures and active operations prevent that decision; active resident review agents also prevent updating. Installation begins only after the GUI exits. Tauri handles package installation (including native administrator authorization for RPM) and restart. Failed installation reopens the review surface with its acknowledged checkpoint. Nothing submits feedback automatically.
+
+The updater public key is embedded in the app; the separate private key and password are restricted to trusted signing/release jobs. Signatures bind the artifact to its announced version, preventing a changed manifest from replaying an older signed payload. Checks time out at 45 seconds; downloads at five minutes and 256 MiB. Private keys never enter the package or update feed. Existing releases without an updater need one manual installation of an updater-enabled version first.
+
+Release builds publish version-bound signatures for RPM, AppImage and the signed/notarized macOS app archive, plus `latest.json` and checksums. Ordinary PR builds remain secret-free. Tests exercise real Tauri signature verification and reject altered payloads/version mismatches; `tests/updates.browser.cjs <own-source-request.json>` checks the production update control with mocked IPC, not a live package installation.
+
 ## Next milestones
 
 Quiz mode is implemented as a working slice, pending native GUI/human acceptance. The remaining agreed delivery order is:

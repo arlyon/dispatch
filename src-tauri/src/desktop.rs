@@ -174,6 +174,7 @@ enum Event {
     TransportError(u64, String),
     Reply(u64, u64, Result<Value>),
     Agent(AgentState),
+    UpdateReady(Result<Box<crate::updates::Prepared>>),
     Show,
     Hide,
     Quit,
@@ -189,6 +190,8 @@ struct Controller {
     pending_show: Option<Option<String>>,
     pending_quit: bool,
     shutting_down: bool,
+    pending_update: bool,
+    prepared_update: Option<crate::updates::Prepared>,
     known: HashSet<String>,
     announced: HashSet<String>,
     attention: bool,
@@ -282,6 +285,9 @@ impl Controller {
         self.notify("Dispatch needs attention", &message);
     }
     fn show(&mut self, review: Option<String>) -> Result<()> {
+        if self.shutting_down {
+            return Err("Dispatch is restarting or quitting; the review remains queued".into());
+        }
         if let Some(gui) = &mut self.gui {
             if gui.lifetime.exiting {
                 self.pending_show = Some(review);
@@ -440,10 +446,26 @@ impl Controller {
                 self.gui.as_mut().unwrap().lifetime.failed(token);
                 self.error(format!("Kept the review window in memory: {error}"));
             }
-            GuiEvent::QuitCancelled => self.pending_quit = false,
+            GuiEvent::QuitCancelled => {
+                self.pending_quit = false;
+                if self.pending_update {
+                    self.pending_update = false;
+                    self.prepared_update = None;
+                    self.app.state::<crate::updates::Updates>().cancel();
+                }
+            }
             GuiEvent::QuitConfirmed { checkpoint } => {
                 if !self.pending_quit || checkpoint.has_feedback {
                     return Err("Unsubmitted feedback prevents quitting".into());
+                }
+                if self.pending_update && self.agents_running() {
+                    self.pending_quit = false;
+                    self.pending_update = false;
+                    self.prepared_update = None;
+                    self.app.state::<crate::updates::Updates>().cancel();
+                    return Err(
+                        "Wait for the active review agent before installing an update".into(),
+                    );
                 }
                 self.accept_checkpoint(checkpoint)?;
                 self.shutting_down = true;
@@ -464,6 +486,13 @@ impl Controller {
                 id,
                 request: Rpc::StartAgent { id: review },
             } => {
+                if self.pending_update || self.shutting_down {
+                    self.gui.as_mut().unwrap().send(GuiCommand::Reply {
+                        id,
+                        result: Err("Update is in progress".into()),
+                    })?;
+                    return Ok(());
+                }
                 let app = self.app.clone();
                 let sender = self.sender.clone();
                 tauri::async_runtime::spawn(async move {
@@ -476,8 +505,89 @@ impl Controller {
                     let _ = sender.send(Event::Reply(generation, id, result));
                 });
             }
+            GuiEvent::Rpc {
+                id,
+                request: Rpc::UpdateStatus,
+            } => {
+                let result =
+                    serde_json::to_value(self.app.state::<crate::updates::Updates>().status())
+                        .map_err(|e| e.to_string());
+                self.gui
+                    .as_mut()
+                    .unwrap()
+                    .send(GuiCommand::Reply { id, result })?;
+            }
+            GuiEvent::Rpc {
+                id,
+                request: Rpc::CheckUpdates,
+            } => {
+                let result = serde_json::to_value(crate::updates::check(self.app.clone()))
+                    .map_err(|e| e.to_string());
+                self.gui
+                    .as_mut()
+                    .unwrap()
+                    .send(GuiCommand::Reply { id, result })?;
+            }
+            GuiEvent::Rpc {
+                id,
+                request: Rpc::InstallUpdate,
+            } => {
+                let result = self.begin_update().map(|()| Value::Null);
+                self.gui
+                    .as_mut()
+                    .unwrap()
+                    .send(GuiCommand::Reply { id, result })?;
+            }
         }
         Ok(())
+    }
+    fn agents_running(&self) -> bool {
+        self.app.state::<Agents>().snapshots().iter().any(|agent| {
+            matches!(
+                agent.phase,
+                crate::agents::Phase::Starting | crate::agents::Phase::Reviewing
+            )
+        })
+    }
+    fn begin_update(&mut self) -> Result<()> {
+        if self.pending_update || self.pending_quit || self.shutting_down || self.agents_running() {
+            return Err("Finish the active operation or review agent before updating".into());
+        }
+        let update = crate::updates::candidate(&self.app)?;
+        self.pending_update = true;
+        let sender = self.sender.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = sender.send(Event::UpdateReady(
+                crate::updates::download(update).await.map(Box::new),
+            ));
+        });
+        Ok(())
+    }
+    fn update_ready(&mut self, result: Result<Box<crate::updates::Prepared>>) -> Result<()> {
+        if !self.pending_update || self.shutting_down {
+            return Ok(());
+        }
+        match result {
+            Ok(prepared) if !self.agents_running() => {
+                self.prepared_update = Some(*prepared);
+                // Always restore/show the GUI to obtain a fresh quit decision, even
+                // if its process disappeared while the download was in flight.
+                if let Err(error) = self.show(None).and_then(|()| self.quit()) {
+                    self.pending_update = false;
+                    self.prepared_update = None;
+                    self.app.state::<crate::updates::Updates>().error(&error);
+                }
+                Ok(())
+            }
+            result => {
+                self.pending_update = false;
+                let message = result
+                    .err()
+                    .unwrap_or_else(|| "Finish the active review agent before updating".into());
+                self.app.state::<crate::updates::Updates>().error(&message);
+                Ok(())
+            }
+        }
     }
     fn tick(&mut self) -> Result<()> {
         let mut stalled = false;
@@ -485,7 +595,21 @@ impl Controller {
             if let Some(status) = gui.child.try_wait().map_err(|e| e.to_string())? {
                 self.gui = None;
                 if self.shutting_down {
-                    self.app.exit(0);
+                    if let Some(prepared) = self.prepared_update.take() {
+                        self.app.state::<crate::updates::Updates>().installing();
+                        match prepared.install() {
+                            Ok(()) => self.app.request_restart(),
+                            Err(error) => {
+                                self.shutting_down = false;
+                                self.pending_quit = false;
+                                self.pending_update = false;
+                                self.app.state::<crate::updates::Updates>().error(&error);
+                                self.show(None)?;
+                            }
+                        }
+                    } else {
+                        self.app.exit(0);
+                    }
                     return Ok(());
                 }
                 if !status.success() {
@@ -537,6 +661,7 @@ fn run_controller(mut controller: Controller, receiver: mpsc::Receiver<Event>) {
                 .as_mut()
                 .map_or(Ok(()), |gui| gui.send(GuiCommand::Hide)),
             Ok(Event::Quit) => controller.quit(),
+            Ok(Event::UpdateReady(result)) => controller.update_ready(result),
             Ok(Event::Gui(generation, event)) => controller.gui_event(generation, event),
             Ok(Event::Reply(generation, id, result)) => {
                 if let Some(gui) = &mut controller.gui
@@ -812,6 +937,8 @@ fn run_resident(
                 pending_show: None,
                 pending_quit: false,
                 shutting_down: false,
+                pending_update: false,
+                prepared_update: None,
                 known,
                 announced: HashSet::new(),
                 attention: false,
@@ -821,11 +948,13 @@ fn run_resident(
                 indicator,
             };
             sender.send(Event::Activate(initial, None))?;
+            crate::updates::start(app.handle().clone());
             std::thread::spawn(move || run_controller(controller, receiver));
             Ok(())
         })
         .build(context)
         .map_err(|e| e.to_string())?;
+    let mut instance = Some(instance);
     app.run(move |app, event| match event {
         tauri::RunEvent::ExitRequested {
             api, code: None, ..
@@ -835,8 +964,12 @@ fn run_resident(
             app.state::<crate::github::GitHub>().stop();
             // Tauri may terminate the process rather than unwind run(). Do not
             // rely on Drop alone to remove the private control socket.
-            if let Err(error) = instance.cleanup() {
-                eprintln!("Dispatch cleanup: {error}");
+            if let Some(instance) = instance.take() {
+                if let Err(error) = instance.cleanup() {
+                    eprintln!("Dispatch cleanup: {error}");
+                }
+                // Release the singleton before Tauri spawns its replacement.
+                drop(instance);
             }
         }
         #[cfg(target_os = "macos")]

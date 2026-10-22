@@ -14,6 +14,7 @@ mod quiz_stream;
 pub mod reviews;
 #[cfg(any(target_os = "macos", test))]
 mod tray_indicator;
+mod updates;
 use serde_json::Value;
 use std::process::{Command, Stdio};
 use tauri::{Emitter, Manager};
@@ -258,6 +259,8 @@ async fn end_quiz(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::Updates::default())
         .manage(agents::Agents::default())
         .manage(quiz::Quizzes::default())
         .manage(github::GitHub::default())
@@ -288,6 +291,9 @@ pub fn run() {
             start_quiz,
             answer_quiz,
             end_quiz,
+            updates::update_status,
+            updates::check_updates,
+            updates::install_update,
             desktop::desktop_bootstrap,
             desktop::desktop_ready,
             desktop::desktop_hide,

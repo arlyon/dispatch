@@ -79,6 +79,9 @@ pub enum GuiEvent {
 pub enum Rpc {
     StartAgent { id: String },
     ListAgents,
+    UpdateStatus,
+    CheckUpdates,
+    InstallUpdate,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]

@@ -140,7 +140,7 @@ test("only dedicated signing calls forward the required Apple secrets and public
   assert.ok(!ordinaryCI.includes("secrets.MACOS_CERTIFICATE") && !ordinaryCI.includes("secrets.APP_STORE_CONNECT"));
   const manualCaller = ci.split("\n  verify-signing:")[1];
   const releaseCaller = release.split("\n  sign-macos:")[1].split("\n  publish:")[0];
-  for (const name of ["MACOS_CERTIFICATE_P12_BASE64", "MACOS_CERTIFICATE_PASSWORD", "APP_STORE_CONNECT_ISSUER_ID", "APP_STORE_CONNECT_KEY_ID", "APP_STORE_CONNECT_PRIVATE_KEY"]) {
+  for (const name of ["MACOS_CERTIFICATE_P12_BASE64", "MACOS_CERTIFICATE_PASSWORD", "APP_STORE_CONNECT_ISSUER_ID", "APP_STORE_CONNECT_KEY_ID", "APP_STORE_CONNECT_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD"]) {
     assert.ok(signing.includes(`${name}:\n        required: true`), `${name} must be declared required`);
     for (const caller of [manualCaller, releaseCaller]) {
       assert.ok(caller.includes(name + ": ${{ secrets." + name + " }}"), `${name} must be explicitly forwarded`);

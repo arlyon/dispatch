@@ -13,10 +13,7 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: release
-  cancel-in-progress: false
-
+# CI must not hold the release mutation locks while downloading/building.
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
@@ -25,6 +22,9 @@ jobs:
 
   release:
     needs: ci
+    concurrency:
+      group: dispatch-release-tags
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -75,16 +75,30 @@ jobs:
       APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
       APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
       APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     with:
       ref: ${{ needs.release.outputs.tag }}
 
   publish:
+    concurrency:
+      group: dispatch-release-publication
+      cancel-in-progress: false
     needs: [ci, release, sign-macos]
     if: needs.release.outputs.tag != ''
     runs-on: ubuntu-24.04
+    environment: production
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        env:
+          MISE_NPM_PACKAGE_MANAGER: npm
+      - run: mise run setup
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: dispatch-linux-x86_64
@@ -93,6 +107,12 @@ jobs:
         with:
           name: dispatch-macos-aarch64-signed
           path: installers/macos
+      - name: Sign Linux updater artifacts and build the format-specific feed
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: mise exec -- node scripts/updater-artifacts.mjs installers "$TAG"
       - name: Attach verified installers and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -101,7 +121,8 @@ jobs:
         run: |
           set -euo pipefail
           # Explicit formats prevent accidentally publishing logs or other files.
-          mapfile -d '' assets < <(find installers -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.dmg' \) -print0 | sort -z)
+          gh release view "$TAG" --json isDraft --jq '.isDraft' | grep -qx true
+          mapfile -d '' assets < <(find installers -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.sig' -o -name 'latest.json' \) -print0 | sort -z)
           for extension in deb rpm AppImage dmg; do
             find installers -name "*.$extension" -print -quit | grep -q .
           done
@@ -110,9 +131,23 @@ jobs:
             (cd "$(dirname "$asset")" && sha256sum -- "$(basename "$asset")")
           done > installers/SHA256SUMS
           gh release upload "$TAG" "${assets[@]}" installers/SHA256SUMS --clobber
-          gh release edit "$TAG" --draft=false --latest
+          latest=$(gh release view --json tagName --jq '.tagName')
+          make_latest=$(python3 - "$TAG" "$latest" <<'PY'
+          import re, sys
+          def version(tag):
+              if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag):
+                  raise SystemExit('Expected stable Dispatch release tags')
+              return tuple(map(int, tag[1:].split('.')))
+          print('true' if version(sys.argv[1]) > version(sys.argv[2]) else 'false')
+          PY
+          )
+          # A delayed older recovery must not move the updater feed backwards.
+          gh release edit "$TAG" --draft=false --latest="$make_latest"
 
   release-pr:
+    concurrency:
+      group: dispatch-release-pr
+      cancel-in-progress: false
     needs: [release, publish]
     if: >-
       ${{ always() && inputs.tag == '' && needs.release.result == 'success' &&

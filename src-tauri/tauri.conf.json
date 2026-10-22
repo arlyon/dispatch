@@ -27,6 +27,13 @@
 			"csp": null
 		}
 	},
+	"plugins": {
+		"updater": {
+			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVBMzE4QjE2QTFFMTNDNTcKUldSWFBPR2hGb3N4V2p5emQ3TE96NWVhaEM0RExqR1Z6TkNQSUhGY0hXeFZTcm5scmVZY1Z6U3QK",
+			"endpoints": ["https://github.com/arlyon/dispatch/releases/latest/download/latest.json"],
+			"requireSignedVersion": true
+		}
+	},
 	"bundle": {
 		"active": true,
 		"license": "MIT AND OFL-1.1",
