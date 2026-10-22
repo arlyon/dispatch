@@ -78,6 +78,7 @@ pub enum GuiEvent {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Rpc {
     StartAgent { id: String },
+    AskAgent { id: String, message: String },
     ListAgents,
     UpdateStatus,
     CheckUpdates,

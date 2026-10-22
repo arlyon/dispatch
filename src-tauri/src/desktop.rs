@@ -483,6 +483,28 @@ impl Controller {
             }
             GuiEvent::Rpc {
                 id,
+                request:
+                    Rpc::AskAgent {
+                        id: review,
+                        message,
+                    },
+            } => {
+                let app = self.app.clone();
+                let sender = self.sender.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = super::ask_review_agent(
+                        app.clone(),
+                        review,
+                        message,
+                        app.state::<Agents>(),
+                    )
+                    .await
+                    .and_then(|state| serde_json::to_value(state).map_err(|e| e.to_string()));
+                    let _ = sender.send(Event::Reply(generation, id, result));
+                });
+            }
+            GuiEvent::Rpc {
+                id,
                 request: Rpc::StartAgent { id: review },
             } => {
                 if self.pending_update || self.shutting_down {

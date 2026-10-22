@@ -45,7 +45,8 @@ export default function App(){
   const [drafts,setDrafts]=createSignal<Record<string,ReviewDraft>>({});
   const [operation,setOperation]=createSignal<"snapshot"|"submit">();
   const [uploads,setUploads]=createSignal(0);
-  const busy=()=>Boolean(operation())||uploads()>0;
+  const [agentSending,setAgentSending]=createSignal(false);
+  const busy=()=>Boolean(operation())||uploads()>0||agentSending();
   const [error,setError]=createSignal("");
   const [notice,setNotice]=createSignal("");
   let autoOpen=true;
@@ -114,6 +115,18 @@ export default function App(){
     acceptAgent({requestId:review.id,phase:"starting",sequence:(agents()[review.id]?.sequence??-2)+1,text:"",error:null,files:[],omitted:review.files.length,sessionPath:""});
     try{await eventsReady;if(disposed)return;if(!eventsAvailable)throw new Error("Native event stream is not available");acceptAgent(await invoke<AgentState>("start_review_agent",{id:review.id}));}
     catch(error){acceptAgent({requestId:review.id,phase:"error",sequence:(agents()[review.id]?.sequence??-1)+1,text:"",error:String(error),files:[],omitted:review.files.length,sessionPath:""});}
+  }
+  function setAgentQuestion(value:string){const id=request()?.id;if(id)setDrafts(all=>({...all,[id]:{...(all[id]||emptyDraft()),agentQuestion:value}}));}
+  async function askAgent(){
+    const review=request(),question=currentDraft().agentQuestion||"";
+    if(!review||!question.trim()||busy()||quiz()||quizStarting()||activeAgent()?.phase!=="complete")return;
+    const id=review.id;setAgentSending(true);setError("");
+    try{
+      const state=await invoke<AgentState>("ask_review_agent",{id,message:question});
+      if(disposed)return;acceptAgent(state);
+      setDrafts(all=>all[id]?.agentQuestion===question?{...all,[id]:{...all[id],agentQuestion:""}}:all);
+    }catch(error){if(!disposed)setError(`Cannot send to Pi: ${String(error)}`);}
+    finally{if(!disposed)setAgentSending(false);}
   }
   createEffect(()=>{const review=request();if(review&&!complete()&&(context()?.owner==="app"||context()?.reviewerEnabled)&&!quizStarting()&&!quiz()&&!agents()[review.id])void startAgent(review);});
   function acceptQuiz(state:QuizState){if(disposed)return;if(quiz()?.id===state.id){if((quiz()?.sequence??-1)<state.sequence)setQuiz(state);}else if(quizStarting())startingQuizEvents.push(state);}
@@ -273,7 +286,7 @@ export default function App(){
     setOperation("submit");setError("");
     try{
       const result=await invoke<ReviewResult>("submit_review",{id:review.id,feedback:{head:review.source.head,comments:currentDraft().comments,summary:currentDraft().summary.trim()||null,threadStates:Object.entries(currentDraft().threadStates).map(([key,state])=>{const [path,side,line]=JSON.parse(key);return {path,side,line,state};})}});
-      batch(()=>{setDrafts(all=>{const next={...all};delete next[review.id];return next;});if(request()?.id===review.id){setStored(result);setAnchor(undefined);}setQueue(all=>all.map(item=>item.id===review.id?{...item,complete:true}:item));});
+      batch(()=>{setDrafts(all=>{const next={...all},question=next[review.id]?.agentQuestion;if(question?.trim())next[review.id]={...emptyDraft(),agentQuestion:question};else delete next[review.id];return next;});if(request()?.id===review.id){setStored(result);setAnchor(undefined);}setQueue(all=>all.map(item=>item.id===review.id?{...item,complete:true}:item));});
       await afterPublication(review,sequence);
     }catch(error){setError(String(error));}finally{setOperation(undefined);}
   }
@@ -300,7 +313,7 @@ export default function App(){
     }}catch(error){setError(`Image paste: ${String(error)}`);}finally{setUploads(count=>count-1);}
   }
   function draftHasFeedback(draft:ReviewDraft|undefined){return Boolean(draft&&(draft.comments.length||draft.summary.trim()||Object.keys(draft.threadStates).length||Object.values(draft.pending).some(item=>item.body.trim())));}
-  function hasFeedback(){return uploads()>0||Object.values(drafts()).some(draftHasFeedback);}
+  function hasFeedback(){return uploads()>0||Object.values(drafts()).some(draft=>draftHasFeedback(draft)||Boolean(draft.agentQuestion?.trim()));}
   function desktopData():DesktopData {
     remember();
     return {drafts:drafts(),navigation:Object.fromEntries(navigation),selectedId:request()?.id||resumeId,
@@ -395,7 +408,7 @@ export default function App(){
   return <WorkspaceShell inboxVisible={inboxVisible()} chatVisible={Boolean(quiz())||chatVisible()} onWorkspace={element=>workspace=element}
     topbar={<TopBar updatesBlocked={Boolean(restoreFailed||hasFeedback()||busy()||githubOpening()||quiz()||quizStarting())} placement={placement()} onPlacement={setPlacement} canBeside={gutterRoom()} stackDepth={stackDepth()} onStackDepth={setStackDepth} wide={useGutter()} request={request()} inboxVisible={inboxVisible()} chatVisible={chatVisible()} complete={complete()} busy={busy()} submitting={operation()==="submit"} commentCount={comments().length} hasSummary={Boolean(summary().trim())} onInbox={()=>setInboxVisible(!inboxVisible())} onChat={()=>{if(!quiz())setChatVisible(!chatVisible());}} onSubmit={()=>void submit()}/>}
     inbox={<InboxPanel github={github()} capture={capture()} onMotion={transition=>animateInbox=transition} cachedRequest={id=>snapshots.get(id)} sourceDisabled={Boolean(quiz())||quizStarting()} onSelectPR={url=>void openGithub(url)} reviews={queue()} request={request()} selectedId={request()?.id} activePath={path()} filter={filter()} agents={agents()} readReady={request()?.files.every(file=>Boolean(identities()[file.path]))||false} readPaths={readPaths()} findingCounts={findingCounts()} busy={busy()} onSelect={(id,file)=>void open(id).then(()=>{if(file&&request()?.id===id)selectFile(file);})} onSelectFile={selectFile} onFilter={setFilter} onRead={markRead} onRefresh={()=>void refresh()} onNew={()=>void selfReview()}/>}
-    chat={<div class="quiz-panel-host"><div class="original-chat" classList={{"quiz-underneath":Boolean(quiz())}} inert={Boolean(quiz())}><ChatPanel quizSummaries={quizSummaries().filter(summary=>summary.requestId===request()?.id&&summary.head===request()?.source.head)} onQuiz={()=>void startQuiz()} quizDisabled={busy()||quizStarting()} quizStarting={quizStarting()} attachments={attachmentLinks()} uploading={uploads()>0} groups={reviewGroups().filter(group=>group.messages.some(message=>message.author!=="Pi"))} onReply={reply} onState={setThreadState} stateCount={Object.keys(currentDraft().threadStates).length} context={context()} onStartReview={()=>{const review=request();if(review)void startAgent(review);}} request={request()} agent={activeAgent()} complete={complete()} submitting={operation()==="submit"} error={error()} comments={comments()} pending={complete()?[]:pending()} summary={summary()} dismissed={dismissedForReview()} unsent={complete()?currentDraft():undefined} onSummary={value=>updateDraft(draft=>({...draft,summary:value}))} onJump={jumpTo} onResume={pending=>jumpTo(pending,true)} onRemove={removeComment} onClose={()=>setChatVisible(false)}/></div><Show when={quiz()}>{state=><QuizPanel state={state()} onDone={quizDone} onJump={jumpTo}/>}</Show></div>}
+    chat={<div class="quiz-panel-host"><div class="original-chat" classList={{"quiz-underneath":Boolean(quiz())}} inert={Boolean(quiz())}><ChatPanel agentQuestion={currentDraft().agentQuestion||""} agentSending={agentSending()} onAgentQuestion={setAgentQuestion} onAskAgent={()=>void askAgent()} quizSummaries={quizSummaries().filter(summary=>summary.requestId===request()?.id&&summary.head===request()?.source.head)} onQuiz={()=>void startQuiz()} quizDisabled={busy()||quizStarting()} quizStarting={quizStarting()} attachments={attachmentLinks()} uploading={uploads()>0} groups={reviewGroups().filter(group=>group.messages.some(message=>message.author!=="Pi"))} onReply={reply} onState={setThreadState} stateCount={Object.keys(currentDraft().threadStates).length} context={context()} onStartReview={()=>{const review=request();if(review)void startAgent(review);}} request={request()} agent={activeAgent()} complete={complete()} submitting={operation()==="submit"} error={error()} comments={comments()} pending={complete()?[]:pending()} summary={summary()} dismissed={dismissedForReview()} unsent={complete()?currentDraft():undefined} onSummary={value=>updateDraft(draft=>({...draft,summary:value}))} onJump={jumpTo} onResume={pending=>jumpTo(pending,true)} onRemove={removeComment} onClose={()=>setChatVisible(false)}/></div><Show when={quiz()}>{state=><QuizPanel state={state()} onDone={quizDone} onJump={jumpTo}/>}</Show></div>}
     footer={<footer class="statusbar"><span class="status-dot"/><span>{operation()==="snapshot"?"Creating local snapshot…":request()?`${readPaths().size}/${request()!.files.length} files read`:"Local review inbox"}</span><span class="status-divider"/><span class="status-file">{path()}</span><span class="spacer"/><span>{activeAgent()?"Native Pi · static inspection":"Immutable local snapshots"}</span><span class="status-divider"/><span>No GitHub publishing</span></footer>}
   >
     <Show when={notice()}><p class="inbox-notice" role="status">{notice()}</p></Show>
