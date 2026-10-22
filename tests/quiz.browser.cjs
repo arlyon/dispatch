@@ -4,9 +4,9 @@ const {spawn}=require('node:child_process'),fs=require('node:fs'),path=require('
 const cwd=path.resolve(__dirname,'..');
 const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 (async()=>{
- const server=spawn('pnpm',['exec','vite','--host','127.0.0.1','--port','14690','--strictPort'],{cwd,stdio:'ignore'});let browser;
+ const server=spawn('pnpm',['exec','vite','--host','127.0.0.1','--port','14693','--strictPort'],{cwd,stdio:'ignore'});let browser;
  try{
-  for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:14690')).ok)break;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}
+  for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:14693')).ok)break;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}
   browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({viewport:{width:1700,height:1100}});const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.addInitScript(request=>{
    const callbacks=new Map(),listeners=new Map();let next=1,quizCount=0,textCount=0;
@@ -20,6 +20,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:callback=>{const id=next++;callbacks.set(id,callback);return id;},invoke:async(command,args)=>{
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}
     if(command==='plugin:event|unlisten')return;
+    if(command==='github_source')return {query:'Mock source',items:[],total:0,partial:false,polling:false,lastSuccess:1,error:null};
     if(command==='plugin:window|close'){window.__closeCalls.push(args);await callbacks.get(listeners.get('tauri://close-requested'))({event:'tauri://close-requested',id:1,payload:{}});return;}
     if(command==='plugin:window|destroy'){window.__destroyCalls.push(args);return;}
     if(command==='list_reviews')return [request,otherReview].map(review=>({id:review.id,title:review.title,source:review.source,fileCount:review.files.length,complete:window.__submitted.some(submitted=>submitted.id===review.id)}));
@@ -51,7 +52,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
     throw Error('Unexpected native command: '+command);
    }};
   },request);
-  await page.goto('http://127.0.0.1:14690');await page.getByRole('button',{name:'Quiz me',exact:true}).waitFor();
+  await page.goto('http://127.0.0.1:14693');await page.getByRole('button',{name:'Quiz me',exact:true}).waitFor();
   assert.ok(await page.locator('.original-chat .reviewer-offer').evaluate(el=>el===el.parentElement.lastElementChild),'reviewer offer is the last conversation item');
   await page.emulateMedia({reducedMotion:'reduce'});await page.getByLabel('Comment placement',{exact:true}).selectOption('inline');
   await page.locator('.original-chat .conversation').getByRole('button',{name:'Go to src/App.tsx:2',exact:true}).click();await page.waitForTimeout(500);
@@ -164,8 +165,9 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
   await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.getByRole('button',{name:'Discard',exact:true}).click();await page.keyboard.press('Meta+s');await page.waitForFunction(()=>window.__submitted.length===1);
   assert.ok(await page.evaluate(()=>window.__starts.every(start=>!JSON.stringify(start.saved).includes('Quiz summary')&&!JSON.stringify(start.saved).includes('An answer with no assessment'))),'main run summaries do not become source-agent quiz context');
   const submitted=await page.evaluate(()=>window.__submitted[0].feedback);assert.equal(submitted.comments.length,1);assert.equal(submitted.comments[0].body,'Saved human note');assert.ok(!JSON.stringify(submitted).includes('assessment')&&!JSON.stringify(submitted).includes('Agent explicitly')&&!JSON.stringify(submitted).includes('Quiz summary')&&!JSON.stringify(submitted).includes('An answer with no assessment'),'quiz verdicts/answers never become submitted review feedback');
+  await page.locator('.inbox-notice').waitFor();await page.locator('.archive-section>summary').click();await page.locator('.archive-list .pr-summary').filter({hasText:request.title}).click();
   await page.getByText('Archived feedback · read-only',{exact:true}).waitFor();assert.equal(await page.locator('.original-chat .reviewer-offer').count(),0,'archived request without an agent never shows the offer');
-  await page.waitForFunction(()=>window.__destroyCalls.length===1);assert.equal(await page.evaluate(()=>window.__closeCalls.length),1,'successful final submit requests normal close exactly once');
+  assert.equal(await page.evaluate(()=>window.__destroyCalls.length),0);assert.equal(await page.evaluate(()=>window.__closeCalls.length),0,'successful final submit keeps another queued review available');
   assert.deepEqual(errors,[]);console.log('PASS reviewer offer always last after quiz summaries, unchanged agent/retry/archive availability, chronological answer/text segments, stable assessment patches, once-only snapshot-scoped run summaries at main chat end, confirmed End counts and review-feedback isolation, progressive feedback/preparation with stable typing, explicit per-answer pass/fail/missing widgets isolated from review submission, delayed review-navigation ownership race, End then navigation, quiz right-bar lifecycle, source/quiz caret, saved-only context, real answer routing shape, failure/cancel, retained final feedback, preserved review DOM/drafts/scroll');
  }finally{await browser?.close();server.kill();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -155,6 +155,12 @@ impl Agents {
         } else {
             0
         };
+        if request.source.pr_url.is_some() && !request.source.repo.join(".git").exists() {
+            return Err(
+                "Open this PR card to pull and check out its branch before starting a review"
+                    .into(),
+            );
+        }
         workers.remove(&request.id);
         let (message, files) = prompt(&request);
         if files.is_empty() {
@@ -356,6 +362,7 @@ mod tests {
                 head: "b".repeat(40),
                 base_ref: "main".into(),
                 head_ref: "HEAD".into(),
+                pr_url: None,
             },
             files: vec![
                 ReviewFile {

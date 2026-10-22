@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { parseReport, type AgentState } from "./AgentReport";
-import type { CommentPlacement, CommentAnchor, QuizRunSummary, ReviewDraft, ReviewRequest, ReviewResult, ReviewSummary, ReviewContext, ThreadStatus } from "./types";
+import type { CaptureProgress, GitHubSource, CommentPlacement, CommentAnchor, QuizRunSummary, ReviewDraft, ReviewRequest, ReviewResult, ReviewSummary, ReviewContext, ThreadStatus } from "./types";
 import WorkspaceShell from "./components/WorkspaceShell";
 import TopBar from "./components/TopBar";
 import InboxPanel from "./components/InboxPanel";
@@ -14,7 +14,7 @@ import FileDiffPanel from "./components/FileDiffPanel";
 import GutterLayout from "./components/GutterLayout";
 import type { DiffHandle } from "./Diff";
 import { groupComments, type Thread } from "./components/SourceThread";
-import type { DiffMode } from "./components/review-ui";
+import { feedbackTarget, type DiffMode } from "./components/review-ui";
 import Icon from "./components/Icon";
 import "./App.css";
 import "./components/refinement.css";
@@ -28,6 +28,15 @@ type Navigation={path:string;filter:string;scroll:number;mode:DiffMode;anchor?:C
 
 export default function App(){
   const [queue,setQueue]=createSignal<ReviewSummary[]>([]);
+  const [github,setGithub]=createSignal<GitHubSource>();
+  const [githubOpening,setGithubOpening]=createSignal<string>();
+  const [capture,setCapture]=createSignal<CaptureProgress>();
+  let animateInbox:(change:()=>void)=>void=change=>change();
+  async function refreshSource(){
+    const sequence=++sourceSequence;
+    try {const source=await invoke<GitHubSource>("github_source");if(disposed||sequence!==sourceSequence)return;setGithub(source);return source;}
+    catch(error){if(!disposed&&sequence===sourceSequence)setGithub(previous=>({...previous,query:previous?.query||"GitHub search",items:previous?.items||[],total:previous?.total??null,partial:previous?.partial||false,polling:false,lastSuccess:previous?.lastSuccess??null,error:String(error)}));}
+  }
   const [request,setRequest]=createSignal<ReviewRequest>();
   const [path,setPath]=createSignal("");
   const [filter,setFilter]=createSignal("");
@@ -37,6 +46,8 @@ export default function App(){
   const [uploads,setUploads]=createSignal(0);
   const busy=()=>Boolean(operation())||uploads()>0;
   const [error,setError]=createSignal("");
+  const [notice,setNotice]=createSignal("");
+  let autoOpen=true;
   const [quiz,setQuiz]=createSignal<QuizState>();
   const [quizSummaries,setQuizSummaries]=createSignal<QuizRunSummary[]>([]);
   const [quizStarting,setQuizStarting]=createSignal(false);
@@ -72,7 +83,7 @@ export default function App(){
   const [handleRevision,setHandleRevision]=createSignal(0);
   let workspace!:HTMLElement;
   let eventsReady:Promise<void>=Promise.resolve(),eventsAvailable=false,disposed=false;
-  let opening:string|undefined,openSequence=0,refreshSequence=0;
+  let opening:string|undefined,openSequence=0,refreshSequence=0,sourceSequence=0;
   const currentDraft=()=>drafts()[request()?.id||""]||emptyDraft();
   const complete=createMemo(()=>Boolean(stored()?.requestId===request()?.id&&stored()||queue().find(item=>item.id===request()?.id)?.complete));
   const activeAgent=()=>agents()[request()?.id||""];
@@ -134,8 +145,12 @@ export default function App(){
       snapshots.set(id,review);
       void hashJob.then(hashes=>{if(!disposed&&request()?.id===id)setIdentities(hashes);}).catch(error=>{if(!disposed&&request()?.id===id)setError(`Cannot load read markers: ${String(error)}`);});
       if(disposed||sequence!==openSequence)return;
+      const previousReview=request();
+      if(previousReview?.source.prUrl&&previousReview.source.prUrl===review.source.prUrl&&previousReview.source.head!==review.source.head&&draftHasFeedback(drafts()[previousReview.id])){
+        setError("New branch files are ready. Submit or explicitly discard your notes on this PR before opening them. Your notes remain on their original code.");return;
+      }
       remember();elements.clear();editorHandles.clear();setHandleRevision(value=>value+1);const previous=navigation.get(id);
-      batch(()=>{setRequest(review);setStored(result);setContext(context);setIdentities(fingerprints.get(id)||{});setPath(previous?.path||review.files[0]?.path||"");setFilter(previous?.filter||"");setMode(previous?.mode||"unified");setAnchor(result?undefined:previous?.anchor);setJump(undefined);setError("");});
+      animateInbox(()=>batch(()=>{setNotice("");setRequest(review);setStored(result);setContext(context);setIdentities(fingerprints.get(id)||{});setPath(previous?.path||review.files[0]?.path||"");setFilter(previous?.filter||"");setMode(previous?.mode||"unified");setAnchor(result?undefined:previous?.anchor);setJump(undefined);setError("");}));
       requestAnimationFrame(()=>{if(!disposed&&request()?.id===id)workspace.scrollTop=previous?.scroll||0;});
     }catch(error){if(sequence===openSequence)setError(String(error));}
     finally{if(sequence===openSequence)opening=undefined;}
@@ -148,8 +163,25 @@ export default function App(){
       setQueue(previous=>entries.map(item=>({...item,complete:item.complete||previous.some(old=>old.id===item.id&&old.complete)})));
       const review=request();
       if(review&&entries.some(item=>item.id===review.id&&item.complete)&&stored()?.requestId!==review.id){const result=await invoke<ReviewResult|null>("review_result",{id:review.id});if(request()?.id===review.id)setStored(result);}
-      if(!request()&&!opening){const next=entries.find(item=>!item.complete);if(next)await open(next.id);}
+      if(autoOpen&&!request()&&!opening){const next=entries.find(item=>!item.complete);if(next)await open(next.id);}
     }catch(error){if(!disposed)setError(String(error));}
+  }
+  async function openGithub(url:string){
+    if(quiz()||quizStarting()){setError("End the quiz before opening another review.");return;}
+    if(githubOpening())return;
+    if(queue().some(review=>review.source.prUrl===url&&draftHasFeedback(drafts()[review.id]))){setError("Submit or explicitly discard your notes on this PR before refreshing its branch. Earlier feedback stays with its original code.");return;}
+    const sequence=++openSequence,captureId=crypto.randomUUID();opening=url;setGithubOpening(url);setError("");
+    animateInbox(()=>setCapture({url,captureId,phase:"metadata"}));
+    try {
+      const review=await invoke<ReviewRequest>("open_github_pr",{url,captureId});
+      snapshots.set(review.id,review);
+      if(disposed)return;
+      refreshSequence++; // Publication supersedes queue reads started before these files existed.
+      animateInbox(()=>batch(()=>{setCapture(undefined);setQueue(all=>[...all.filter(item=>item.id!==review.id),{id:review.id,title:review.title,source:review.source,fileCount:review.files.length,checkoutReady:true,complete:all.find(item=>item.id===review.id)?.complete||false,intakeAt:Date.now()}]);}));
+      if(sequence!==openSequence)return;
+      await open(review.id);
+    } catch(error){if(!disposed&&sequence===openSequence)setError(`Cannot capture PR: ${String(error)}`);}
+    finally {if(opening===url)opening=undefined;if(!disposed){animateInbox(()=>setCapture(undefined));setGithubOpening(undefined);}}
   }
   async function selfReview(){
     if(busy())return;setOperation("snapshot");setError("");
@@ -198,14 +230,47 @@ export default function App(){
     if(Object.values(currentDraft().pending).some(item=>item.editingIndex===index)&&!window.confirm("Remove this comment and its unfinished edit?"))return;
     updateDraft(draft=>({...draft,comments:draft.comments.filter((_,position)=>position!==index),pending:Object.fromEntries(Object.entries(draft.pending).filter(([,item])=>item.editingIndex!==index).map(([key,item])=>[key,item.editingIndex!==undefined&&item.editingIndex>index?{...item,editingIndex:item.editingIndex-1}:item]))}));
   }
+  function returnToInbox(message:string){
+    remember();autoOpen=false;openSequence++;opening=undefined;elements.clear();editorHandles.clear();setHandleRevision(value=>value+1);
+    batch(()=>{setRequest(undefined);setStored(null);setContext(null);setIdentities({});setPath("");setFilter("");setAnchor(undefined);setJump(undefined);setInboxVisible(true);setNotice(message);});
+  }
+  async function afterPublication(review:ReviewRequest,sequence:number){
+    let remaining=true;
+    const queueCheck=++refreshSequence;
+    const sourceJob=refreshSource(),sourceCheck=sourceSequence;
+    try {
+      const [entries,source]=await Promise.all([invoke<ReviewSummary[]>("list_reviews"),sourceJob]);
+      if(disposed)return;
+      // Share ordering with periodic reads. A superseded check cannot erase newer
+      // work or establish emptiness, even if its source response finished earlier.
+      if(queueCheck===refreshSequence){
+        setQueue(previous=>entries.map(item=>({...item,complete:item.id===review.id||item.complete||previous.some(old=>old.id===item.id&&old.complete)})));
+        if(sourceCheck===sourceSequence){
+          const authoritative=source&&source.total!==null&&source.lastSuccess!==null&&!source.error&&!source.partial&&!source.polling;
+          const head=source?.heads?.find(head=>head.url===review.source.prUrl);
+          const branchWork=Boolean(review.source.prUrl&&(!head?.head||head.checking||head.error||head.head.toLowerCase()!==review.source.head.toLowerCase()));
+          remaining=entries.some(item=>item.id!==review.id&&!item.complete)||Boolean(source?.items.some(item=>item.url!==review.source.prUrl))||branchWork||!authoritative;
+        }
+      }
+    } catch { /* Publication succeeded; unavailable work state must never imply empty. */ }
+    if(disposed)return;
+    // A newer navigation or in-flight capture owns its own result. Never replace it.
+    if(sequence!==openSequence||request()?.id!==review.id||opening||githubOpening())return;
+    if(remaining){
+      if(!quiz()&&!quizStarting())returnToInbox(`Feedback submitted for ${feedbackTarget(review)}. Choose another change from Inbox.`);
+      return;
+    }
+    try{await getCurrentWindow().close();}catch(error){setError(`Feedback submitted, but could not close window: ${String(error)}`);}
+  }
   async function submit(){
     const review=request();if(!review||complete()||busy())return;
     if(pending().length){setError("Save or discard your unfinished line comments before submitting.");setChatVisible(true);return;}
+    const sequence=openSequence;
     setOperation("submit");setError("");
     try{
       const result=await invoke<ReviewResult>("submit_review",{id:review.id,feedback:{head:review.source.head,comments:currentDraft().comments,summary:currentDraft().summary.trim()||null,threadStates:Object.entries(currentDraft().threadStates).map(([key,state])=>{const [path,side,line]=JSON.parse(key);return {path,side,line,state};})}});
       batch(()=>{setDrafts(all=>{const next={...all};delete next[review.id];return next;});if(request()?.id===review.id){setStored(result);setAnchor(undefined);}setQueue(all=>all.map(item=>item.id===review.id?{...item,complete:true}:item));});
-      try{await getCurrentWindow().close();}catch(error){setError(`Feedback submitted, but could not close window: ${String(error)}`);}
+      await afterPublication(review,sequence);
     }catch(error){setError(String(error));}finally{setOperation(undefined);}
   }
   async function submitOrClose(){
@@ -230,28 +295,38 @@ export default function App(){
       queueMicrotask(()=>{if(request()?.id===id&&target.isConnected&&document.activeElement===target){const end=target.value.length;target.setSelectionRange(end,end);target.scrollTop=target.scrollHeight;}});
     }}catch(error){setError(`Image paste: ${String(error)}`);}finally{setUploads(count=>count-1);}
   }
-  function hasFeedback(){return uploads()>0||Object.values(drafts()).some(draft=>draft.comments.length||draft.summary.trim()||Object.keys(draft.threadStates).length||Object.values(draft.pending).some(item=>item.body.trim()));}
+  function draftHasFeedback(draft:ReviewDraft|undefined){return Boolean(draft&&(draft.comments.length||draft.summary.trim()||Object.keys(draft.threadStates).length||Object.values(draft.pending).some(item=>item.body.trim())));}
+  function hasFeedback(){return uploads()>0||Object.values(drafts()).some(draftHasFeedback);}
   onMount(()=>{
-    let stopClose:(()=>void)|undefined,stopAgents:(()=>void)|undefined,stopQuiz:(()=>void)|undefined;
+    let stopClose:(()=>void)|undefined,stopAgents:(()=>void)|undefined,stopQuiz:(()=>void)|undefined,stopCapture:(()=>void)|undefined;
     if("__TAURI_INTERNALS__"in window){
+      void listen<CaptureProgress>("github-capture",event=>{
+        const update=event.payload,readOrder=update.readOrder;if(disposed||capture()?.captureId!==update.captureId)return;
+        if(update.phase==="metadata"&&typeof readOrder==="number"){
+          sourceSequence++; // Reject cache replies issued before this actual metadata-read floor.
+          setGithub(previous=>previous?{...previous,heads:previous.heads?.map(head=>head.url===update.url&&(head.readOrder??0)<readOrder?{...head,head:null,checking:true,error:null,readOrder}:head)}:previous);
+        }
+        setCapture(update);
+      }).then(stop=>{if(disposed)stop();else stopCapture=stop;}).catch(()=>{});
       const quizEvents=listen<QuizState>("review-quiz",event=>acceptQuiz(event.payload)).then(stop=>{if(disposed)stop();else stopQuiz=stop;});
       const agentEvents=listen<AgentState>("review-agent",event=>acceptAgent(event.payload)).then(async stop=>{if(disposed){stop();return;}stopAgents=stop;for(const state of await invoke<AgentState[]>("list_review_agents"))acceptAgent(state);});
       eventsReady=Promise.all([quizEvents,agentEvents]).then(()=>{if(!disposed)eventsAvailable=true;}).catch(error=>{setError(`Agent event stream: ${String(error)}`);});
       void getCurrentWindow().onCloseRequested(event=>{if(hasFeedback()){event.preventDefault();setError("You have unsubmitted feedback. Submit it, or explicitly discard it, before closing.");setChatVisible(true);}else if(quiz()||quizStarting()){event.preventDefault();setError("End the quiz before closing the window.");setChatVisible(true);}}).then(stop=>{if(disposed)stop();else stopClose=stop;});
     }
-    void refresh();const timer=setInterval(()=>void refresh(),1500);
+    void refresh();void refreshSource();const timer=setInterval(()=>{void refresh();void refreshSource();},1500);
     const observer=new ResizeObserver(()=>{const style=getComputedStyle(workspace);const room=workspace.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)>=760;setGutterRoom(room);setHasGutter(window.innerWidth>=1180&&room);});observer.observe(workspace);
     const keyboard=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==="s"){event.preventDefault();event.stopPropagation();if(!event.repeat)void submitOrClose();return;}const target=event.target as HTMLElement;if(event.key==="/"&&!target.matches("input,textarea,[contenteditable=true]")){event.preventDefault();setInboxVisible(true);document.querySelector<HTMLInputElement>(".search input")?.focus();}};
     document.addEventListener("keydown",keyboard,true);
     document.addEventListener("paste",pasteImage);
-    onCleanup(()=>{disposed=true;openSequence++;clearInterval(timer);observer.disconnect();document.removeEventListener("keydown",keyboard,true);document.removeEventListener("paste",pasteImage);stopClose?.();stopAgents?.();stopQuiz?.();});
+    onCleanup(()=>{disposed=true;openSequence++;clearInterval(timer);observer.disconnect();document.removeEventListener("keydown",keyboard,true);document.removeEventListener("paste",pasteImage);stopClose?.();stopAgents?.();stopQuiz?.();stopCapture?.();});
   });
   return <WorkspaceShell inboxVisible={inboxVisible()} chatVisible={Boolean(quiz())||chatVisible()} onWorkspace={element=>workspace=element}
     topbar={<TopBar placement={placement()} onPlacement={setPlacement} canBeside={gutterRoom()} stackDepth={stackDepth()} onStackDepth={setStackDepth} wide={useGutter()} request={request()} inboxVisible={inboxVisible()} chatVisible={chatVisible()} complete={complete()} busy={busy()} submitting={operation()==="submit"} commentCount={comments().length} hasSummary={Boolean(summary().trim())} onInbox={()=>setInboxVisible(!inboxVisible())} onChat={()=>{if(!quiz())setChatVisible(!chatVisible());}} onSubmit={()=>void submit()}/>}
-    inbox={<InboxPanel reviews={queue()} request={request()} selectedId={request()?.id} activePath={path()} filter={filter()} agents={agents()} readReady={request()?.files.every(file=>Boolean(identities()[file.path]))||false} readPaths={readPaths()} findingCounts={findingCounts()} busy={busy()} onSelect={id=>void open(id)} onSelectFile={selectFile} onFilter={setFilter} onRead={markRead} onRefresh={()=>void refresh()} onNew={()=>void selfReview()}/>}
+    inbox={<InboxPanel github={github()} capture={capture()} onMotion={transition=>animateInbox=transition} cachedRequest={id=>snapshots.get(id)} sourceDisabled={Boolean(quiz())||quizStarting()} onSelectPR={url=>void openGithub(url)} reviews={queue()} request={request()} selectedId={request()?.id} activePath={path()} filter={filter()} agents={agents()} readReady={request()?.files.every(file=>Boolean(identities()[file.path]))||false} readPaths={readPaths()} findingCounts={findingCounts()} busy={busy()} onSelect={(id,file)=>void open(id).then(()=>{if(file&&request()?.id===id)selectFile(file);})} onSelectFile={selectFile} onFilter={setFilter} onRead={markRead} onRefresh={()=>void refresh()} onNew={()=>void selfReview()}/>}
     chat={<div class="quiz-panel-host"><div class="original-chat" classList={{"quiz-underneath":Boolean(quiz())}} inert={Boolean(quiz())}><ChatPanel quizSummaries={quizSummaries().filter(summary=>summary.requestId===request()?.id&&summary.head===request()?.source.head)} onQuiz={()=>void startQuiz()} quizDisabled={busy()||quizStarting()} quizStarting={quizStarting()} attachments={attachmentLinks()} uploading={uploads()>0} groups={reviewGroups().filter(group=>group.messages.some(message=>message.author!=="Pi"))} onReply={reply} onState={setThreadState} stateCount={Object.keys(currentDraft().threadStates).length} context={context()} onStartReview={()=>{const review=request();if(review)void startAgent(review);}} request={request()} agent={activeAgent()} complete={complete()} submitting={operation()==="submit"} error={error()} comments={comments()} pending={complete()?[]:pending()} summary={summary()} dismissed={dismissedForReview()} unsent={complete()?currentDraft():undefined} onSummary={value=>updateDraft(draft=>({...draft,summary:value}))} onJump={jumpTo} onResume={pending=>jumpTo(pending,true)} onRemove={removeComment} onClose={()=>setChatVisible(false)}/></div><Show when={quiz()}>{state=><QuizPanel state={state()} onDone={quizDone} onJump={jumpTo}/>}</Show></div>}
     footer={<footer class="statusbar"><span class="status-dot"/><span>{operation()==="snapshot"?"Creating local snapshot…":request()?`${readPaths().size}/${request()!.files.length} files read`:"Local review inbox"}</span><span class="status-divider"/><span class="status-file">{path()}</span><span class="spacer"/><span>{activeAgent()?"Native Pi · static inspection":"Immutable local snapshots"}</span><span class="status-divider"/><span>No GitHub publishing</span></footer>}
   >
+    <Show when={notice()}><p class="inbox-notice" role="status">{notice()}</p></Show>
     <Show when={error()}><div class="error-banner" role="alert"><span>{error()}</span><Show when={hasFeedback()}><button disabled={busy()} onClick={()=>{setDrafts({});setAnchor(undefined);setError("");}}>Discard all unsubmitted feedback</button></Show><button class="iconbtn" aria-label="Dismiss message" onClick={()=>setError("")}><Icon name="close"/></button></div></Show>
     <Show when={request()} fallback={<section class="empty-state"><Icon name="branch"/><h1>Your review inbox</h1><p>Open a change from Inbox, or snapshot Dispatch against main.</p><button class="primary-action" disabled={busy()} onClick={()=>void selfReview()}>Review Dispatch</button><p class="muted">Completed reviews stay readable in Archive.</p></section>}>{review=><>
       <ChangeContext hasGuide={Boolean(context()?.guide)} onGuide={()=>{setChatVisible(true);requestAnimationFrame(()=>document.querySelector(".review-guide-context")?.scrollIntoView({block:"start"}));}} request={review()} complete={complete()} mode={mode()} onMode={setMode} hasGutter={useGutter()}/>

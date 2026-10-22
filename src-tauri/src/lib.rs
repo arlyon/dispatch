@@ -1,11 +1,16 @@
 mod agents;
 mod attachments;
+mod git_checkout;
+mod github;
+mod github_snapshot;
+#[cfg(test)]
+mod github_test_support;
 mod quiz;
 mod quiz_stream;
 pub mod reviews;
 use serde_json::Value;
 use std::process::{Command, Stdio};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 fn canonical_pr_url(input: &str) -> Result<String, String> {
     let url = input.trim().split(['?', '#']).next().unwrap_or("");
@@ -49,6 +54,50 @@ async fn describe_pr(url: String) -> Result<Value, String> {
         }
         serde_json::from_slice(&output.stdout).map_err(|error| format!("Invalid GitHub response: {error}"))
     }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn github_source(github: tauri::State<'_, github::GitHub>) -> github::SourceState {
+    github.snapshot()
+}
+
+#[tauri::command]
+async fn open_github_pr(
+    app: tauri::AppHandle,
+    url: String,
+    capture_id: String,
+    github: tauri::State<'_, github::GitHub>,
+) -> Result<reviews::ReviewRequest, String> {
+    // Only approved search results or already materialized PRs may be captured.
+    // Stale results remain usable; metadata never grants arbitrary URL access.
+    let url = canonical_pr_url(&url)?;
+    let root = reviews::root()?;
+    if !github.snapshot().items.iter().any(|item| item.url == url)
+        && !reviews::list(&root)?
+            .iter()
+            .any(|item| item.source.pr_url.as_deref() == Some(&url))
+    {
+        return Err(
+            "PR is not a result of the configured GitHub search or a materialized review".into(),
+        );
+    }
+    let mut shutdown = github.cancellation();
+    if *shutdown.borrow() {
+        return Err("Dispatch is closing".into());
+    }
+    let result = tokio::select! {
+        _ = shutdown.changed() => Err("Dispatch is closing".into()),
+        result = async {
+            let _opening = github.opening.lock().await;
+            tokio::time::timeout(std::time::Duration::from_secs(300), github.capture_checkout("gh", &root, &url, |progress| {
+                let _ = app.emit("github-capture", serde_json::json!({"url":url,"captureId":capture_id,"phase":progress.phase,"readOrder":progress.read_order,"head":progress.head,"done":progress.done,"total":progress.total}));
+            })).await.map_err(|_| "PR checkout timed out".to_string())?
+        } => result,
+    };
+    if result.is_ok() {
+        github.wake_heads();
+    }
+    result
 }
 
 #[tauri::command]
@@ -178,14 +227,22 @@ pub fn run() {
     tauri::Builder::default()
         .manage(agents::Agents::default())
         .manage(quiz::Quizzes::default())
+        .manage(github::GitHub::default())
+        .setup(|app| {
+            app.state::<github::GitHub>().start();
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 window.state::<agents::Agents>().stop_all();
                 window.state::<quiz::Quizzes>().stop_all();
+                window.state::<github::GitHub>().stop();
             }
         })
         .invoke_handler(tauri::generate_handler![
             describe_pr,
+            github_source,
+            open_github_pr,
             save_attachment,
             read_attachment,
             list_reviews,
@@ -201,8 +258,13 @@ pub fn run() {
             answer_quiz,
             end_quiz
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Dispatch");
+        .build(tauri::generate_context!())
+        .expect("error while building Dispatch")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<github::GitHub>().stop();
+            }
+        });
 }
 
 #[cfg(test)]

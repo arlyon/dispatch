@@ -18,6 +18,8 @@ pub struct Source {
     pub head: String,
     pub base_ref: String,
     pub head_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -44,7 +46,10 @@ pub struct ReviewSummary {
     pub title: String,
     pub source: Source,
     pub file_count: usize,
+    pub intake_at: u64,
     pub complete: bool,
+    #[serde(default)]
+    pub checkout_ready: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -299,6 +304,7 @@ pub fn enqueue_with_context(
             head: head_sha,
             base_ref: base.into(),
             head_ref: head.into(),
+            pr_url: None,
         },
         files,
     };
@@ -317,6 +323,88 @@ pub fn enqueue_with_context(
     }
     publish(&dir.join("request.json"), &request)?;
     Ok(request)
+}
+
+/// Publish a remote snapshot only after all immutable API reads succeed. The native
+/// agent's cwd is this real private directory, never the untrusted remote URL.
+pub(crate) fn publish_remote(
+    root: &Path,
+    request: ReviewRequest,
+    guide: String,
+) -> Result<ReviewRequest> {
+    publish_remote_inner(root, request, guide, None)
+}
+
+pub(crate) fn publish_remote_with_checkout(
+    root: &Path,
+    request: ReviewRequest,
+    guide: String,
+    checkout: &Path,
+) -> Result<ReviewRequest> {
+    publish_remote_inner(root, request, guide, Some(checkout))
+}
+
+fn publish_remote_inner(
+    root: &Path,
+    mut request: ReviewRequest,
+    guide: String,
+    checkout: Option<&Path>,
+) -> Result<ReviewRequest> {
+    ensure_root(root)?;
+    let dir = directory(root, &request.id)?;
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir).map_err(|e| e.to_string())?;
+    request.source.repo = if let Some(checkout) = checkout {
+        let destination = dir.join("repository");
+        fs::rename(checkout, &destination).map_err(|e| e.to_string())?;
+        destination.canonicalize().map_err(|e| e.to_string())?
+    } else {
+        dir.canonicalize().map_err(|e| e.to_string())?
+    };
+    let context = ReviewContext {
+        guide,
+        ..Default::default()
+    };
+    validate_context(&context, &request)?;
+    publish(&dir.join("context.json"), &context)?;
+    publish(&dir.join("request.json"), &request)?;
+    Ok(request)
+}
+
+pub(crate) fn remote_revision(
+    root: &Path,
+    url: &str,
+    base: &str,
+    head: &str,
+) -> Result<Option<ReviewRequest>> {
+    ensure_root(root)?;
+    let mut matches = Vec::new();
+    for entry in fs::read_dir(root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if let Ok(request) = read_request(root, &id)
+            && request.source.pr_url.as_deref() == Some(url)
+            && request.source.base == base
+            && request.source.head == head
+        {
+            // Recovery can intentionally leave a completed request and a fresh
+            // pending copy. Prefer pending, then newest immutable request, then ID.
+            let pending = !entry.path().join("result.json").exists();
+            let modified = fs::metadata(entry.path().join("request.json"))
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            matches.push(((pending, modified, id), request));
+        }
+    }
+    Ok(matches
+        .into_iter()
+        .max_by_key(|(key, _)| key.clone())
+        .map(|(_, request)| request))
 }
 
 pub fn read_request(root: &Path, id: &str) -> Result<ReviewRequest> {
@@ -339,14 +427,25 @@ pub fn list(root: &Path) -> Result<Vec<ReviewSummary>> {
     entries
         .sort_by_key(|entry| std::cmp::Reverse(entry.metadata().and_then(|m| m.modified()).ok()));
     let mut reviews = Vec::new();
-    for entry in entries.into_iter().take(50) {
+    for entry in entries
+        .into_iter()
+        .filter(|entry| entry.path().join("request.json").is_file())
+        .take(50)
+    {
         let id = entry.file_name().to_string_lossy().into_owned();
         if let Ok(request) = read_request(root, &id) {
             reviews.push(ReviewSummary {
                 id,
                 title: request.title,
+                checkout_ready: request.source.pr_url.is_none()
+                    || request.source.repo.join(".git").exists(),
                 source: request.source,
                 file_count: request.files.len(),
+                intake_at: fs::metadata(entry.path().join("request.json"))
+                    .ok()
+                    .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |duration| duration.as_millis() as u64),
                 complete: entry.path().join("result.json").exists(),
             });
         }
@@ -490,17 +589,24 @@ pub fn file_identities(
 ) -> Result<std::collections::BTreeMap<String, String>> {
     use sha2::{Digest, Sha256};
     let request = read_request(root, id)?;
-    let repo = git(
-        &request.source.repo,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .unwrap_or_else(|_| request.source.repo.to_string_lossy().as_bytes().to_vec());
+    let repo = if let Some(url) = &request.source.pr_url {
+        url.as_bytes().to_vec()
+    } else {
+        git(
+            &request.source.repo,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .unwrap_or_else(|_| request.source.repo.to_string_lossy().as_bytes().to_vec())
+    };
     let valid_sha = |value: &str| {
         matches!(value.len(), 40 | 64) && value.bytes().all(|c| c.is_ascii_hexdigit())
     };
     let mut identities = std::collections::BTreeMap::new();
     for file in &request.files {
-        let patch = if valid_sha(&request.source.base) && valid_sha(&request.source.head) {
+        let patch = if request.source.pr_url.is_none()
+            && valid_sha(&request.source.base)
+            && valid_sha(&request.source.head)
+        {
             git(
                 &request.source.repo,
                 &[
@@ -565,6 +671,74 @@ pub fn file_identities(
 mod tests {
     use super::*;
     #[test]
+    fn remote_revision_prefers_pending_recovery_then_latest_request_deterministically() {
+        let root = crate::github_test_support::private_root();
+        let url = "https://github.com/carpe-lab/repo/pull/42";
+        let mut requests = Vec::new();
+        for (index, seconds) in [(1, 300), (2, 100), (3, 200), (4, 200)] {
+            let request = publish_remote(
+                root.path(),
+                ReviewRequest {
+                    version: 1,
+                    id: format!("00000000-0000-4000-8000-{index:012}"),
+                    title: "Recovery fixture".into(),
+                    source: Source {
+                        repo: root.path().into(),
+                        base: "a".repeat(40),
+                        head: "b".repeat(40),
+                        base_ref: "main".into(),
+                        head_ref: "topic".into(),
+                        pr_url: Some(url.into()),
+                    },
+                    files: vec![],
+                },
+                String::new(),
+            )
+            .unwrap();
+            let path = request.source.repo.join("request.json");
+            fs::File::open(&path)
+                .unwrap()
+                .set_times(
+                    fs::FileTimes::new().set_modified(
+                        std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+                    ),
+                )
+                .unwrap();
+            requests.push(request);
+        }
+        let feedback = Feedback {
+            head: "b".repeat(40),
+            comments: vec![],
+            summary: Some("Original immutable result".into()),
+            thread_states: vec![],
+        };
+        submit(root.path(), &requests[0].id, feedback.clone()).unwrap();
+        let original_request = fs::read(requests[0].source.repo.join("request.json")).unwrap();
+        let original_result = fs::read(requests[0].source.repo.join("result.json")).unwrap();
+        let lookup = || {
+            remote_revision(root.path(), url, &"a".repeat(40), &"b".repeat(40))
+                .unwrap()
+                .unwrap()
+                .id
+        };
+        // The newest completed original never masks pending recovery; equal times use ID.
+        assert_eq!(lookup(), requests[3].id);
+        submit(root.path(), &requests[3].id, feedback.clone()).unwrap();
+        assert_eq!(lookup(), requests[2].id);
+        submit(root.path(), &requests[2].id, feedback.clone()).unwrap();
+        assert_eq!(lookup(), requests[1].id);
+        submit(root.path(), &requests[1].id, feedback).unwrap();
+        assert_eq!(lookup(), requests[0].id);
+        assert_eq!(
+            fs::read(requests[0].source.repo.join("request.json")).unwrap(),
+            original_request
+        );
+        assert_eq!(
+            fs::read(requests[0].source.repo.join("result.json")).unwrap(),
+            original_result
+        );
+    }
+    #[test]
     fn completion_is_explicit_and_cannot_overwrite_previous_feedback() {
         let root = tempfile::tempdir().unwrap();
         let id = Uuid::new_v4().to_string();
@@ -576,6 +750,7 @@ mod tests {
             head: "b".repeat(40),
             base_ref: "main".into(),
             head_ref: "HEAD".into(),
+            pr_url: None,
         };
         let request = ReviewRequest {
             version: 1,

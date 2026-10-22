@@ -1,8 +1,13 @@
 import { Text } from "@codemirror/state";
 import { Chunk } from "@codemirror/merge";
-import type { ReviewFile } from "../types";
+import type { ReviewFile, ReviewRequest } from "../types";
 export type DiffMode = "unified" | "split";
 export function repositoryName(path: string) { return path.split(/[\\/]\.wt[\\/]/)[0].split(/[\\/]/).filter(Boolean).slice(-1)[0] || path; }
+export function feedbackTarget(request: ReviewRequest) {
+  return request.source.prUrl
+    ? `${request.source.prUrl.replace("https://github.com/", "").replace("/pull/", " #")} · ${request.source.head.slice(0,7)}`
+    : `Local ${repositoryName(request.source.repo)} · ${request.source.baseRef} (${request.source.base.slice(0,7)}) → ${request.source.headRef} (${request.source.head.slice(0,7)})`;
+}
 export function fileName(path: string) { return path.split("/").slice(-1)[0] || path; }
 const statistics = new WeakMap<ReviewFile, { added: number; removed: number }>();
 export function fileStats(file: ReviewFile) {

@@ -39,6 +39,7 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
         transformCallback: () => 1,
         invoke: async (command, args) => {
           window.__calls.push({ command, id: args?.id });
+          if (command === "github_source") return {query:"Mock source",items:[],total:0,partial:false,polling:false,lastSuccess:1,error:null};
           if (command === "list_reviews") return requests.map(r => ({ id: r.id, title: r.title, source: r.source, fileCount: r.files.length, complete: !!results[r.id] }));
           if (command === "open_review") return requests.find(r => r.id === args.id);
           if (command === "review_result") return results[args.id] || null;
@@ -321,7 +322,7 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
     await page.getByRole("button", { name: /Submit feedback/ }).click();
     assert.equal(await summary.evaluate(element => element.readOnly), true, "freeze editing while payload is being flushed");
     await summary.focus(); await page.keyboard.type("MUST NOT BE LOST OR SENT");
-    await page.getByText("Review complete", { exact: true }).waitFor();
+    await page.locator('.inbox-notice').waitFor();
     const submitted = await page.evaluate(() => window.__submitted);
     assert.equal(submitted.length, 1);
     assert.equal(submitted[0].feedback.summary, finalSummary);
@@ -335,7 +336,7 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
     await page.locator(".archive-section>summary").click();
     await page.locator(".archive-list .active-pr").click();
     assert.equal(await summary.inputValue(), finalSummary);
-    assert.equal(await page.evaluate(()=>window.__calls.filter(call=>call.command==="plugin:window|close").length),1,"successful topbar submit requests normal close once");
+    assert.equal(await page.evaluate(()=>window.__calls.filter(call=>call.command==="plugin:window|close").length),0,"successful topbar submit keeps the other queued review available");
     assert.deepEqual(errors, []);
     await page.screenshot({ path: path.join(os.tmpdir(), "dispatch-comments-regression.png") });
     console.log("PASS: native comment-jump command/frame profile, bounded animated alignment/manual interruption/reduced motion, overlay titlebar config/drag region, automatic/override animated inline threads, SVG chevron/no Markdown gap, focus/caret, same-line toggle, constrained cards/no scroll fade, same-node space-gated stacks/flush edges/native flow/pinned stability/no corrective writes/rounded upper reveal, paste caret, nested wheel chaining, edit/cancel/trash, Reviewed label/collapse/reopen, image chips/HTTPS safety, global Cmd-S submission, ranges, safe retry, cache and Archive. IPC mocked; live reviews untouched.");
