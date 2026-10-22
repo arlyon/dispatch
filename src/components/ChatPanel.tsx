@@ -2,6 +2,7 @@ import { For, Show } from "solid-js";
 import AgentReport, { type AgentState } from "../AgentReport";
 import type { QuizRunSummary, Comment, CommentAnchor, PendingComment, ReviewDraft, ReviewRequest, ReviewContext, ThreadStatus } from "../types";
 import Icon from "./Icon";
+import LinkedContext from "./LinkedContext";
 import { feedbackTarget } from "./review-ui";
 import Markdown from "./Markdown";
 import AnimatedDisclosure from "./AnimatedDisclosure";
@@ -14,6 +15,7 @@ export default function ChatPanel(props:{
 }) {
   return <section class="right floating-panel"><header class="right-head"><strong>Chat</strong><span class="chat-context">This change</span><span class="spacer"/><Show when={props.request}><button class="quiz-start" disabled={props.quizDisabled} onClick={props.onQuiz}>{props.quizStarting?"Preparing…":"Quiz me"}</button></Show><button class="iconbtn" aria-label="Close Chat" onClick={props.onClose}><Icon name="close"/></button></header><div class="conversation">
     <Show when={props.request} fallback={<p class="conversation-empty">Open a change from Inbox to begin a review.</p>}>
+      <Show when={props.request}>{request=><LinkedContext request={request()} locked={props.complete||Boolean(props.agent)||props.quizStarting}/>}</Show>
       <Show when={props.context?.guide}><section class="review-guide-context"><div class="comment-byline"><span class="comment-avatar">A</span><strong>Agent</strong><span class="agent-purpose">Opening context · not your feedback</span></div><AnimatedDisclosure title="Review guide" open><Markdown text={props.context?.guide||""}/></AnimatedDisclosure></section></Show>
       <For each={props.groups.map(group=>group.id)}>{id=><ConversationComment group={props.groups.find(group=>group.id===id)!} readonly={props.complete||props.submitting} onJump={props.onJump} onReply={props.onReply} onState={props.onState} onRemove={props.onRemove}/>}</For>
       <Show when={props.agent} fallback={<Show when={props.complete}><p class="archived-chat-note">Archived feedback · read-only</p></Show>}>{state=><AgentReport state={state()} request={props.request!} dismissed={props.dismissed} onJump={(path,line=1,side="new")=>props.onJump({path,line,side})}/>}</Show><Show when={!props.complete&&props.agent?.phase==="error"}><button class="reviewer-start" onClick={props.onStartReview}>Retry Pi review · same session</button></Show>
