@@ -64,17 +64,34 @@ jobs:
             tag=$(jq -r '[.[] | select(.package_name == "dispatch")][0].tag // empty' <<< "${RELEASES:-[]}")
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  sign-macos:
+    needs: release
+    if: needs.release.outputs.tag != ''
+    uses: ./.github/workflows/sign-macos.yml
+    with:
+      ref: ${{ needs.release.outputs.tag }}
+
+  publish:
+    needs: [ci, release, sign-macos]
+    if: needs.release.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        if: steps.target.outputs.tag != ''
         with:
-          pattern: dispatch-*
-          path: installers
-          merge-multiple: true
-      - name: Attach all installers and publish
-        if: steps.target.outputs.tag != ''
+          name: dispatch-linux-x86_64
+          path: installers/linux
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: dispatch-macos-aarch64-signed
+          path: installers/macos
+      - name: Attach verified installers and publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.target.outputs.tag }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
         run: |
           set -euo pipefail
           # Explicit formats prevent accidentally publishing logs or other files.
@@ -90,8 +107,10 @@ jobs:
           gh release edit "$TAG" --draft=false --latest
 
   release-pr:
-    needs: release
-    if: inputs.tag == ''
+    needs: [release, publish]
+    if: >-
+      ${{ always() && inputs.tag == '' && needs.release.result == 'success' &&
+          (needs.release.outputs.tag == '' || needs.publish.result == 'success') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
