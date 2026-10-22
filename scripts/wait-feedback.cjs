@@ -15,7 +15,7 @@ process.stdin.on("end", () => {
       if (typeof task.directory !== "string" || !path.isAbsolute(task.directory)) throw Error("Review directory must be absolute");
       env.DISPATCH_REVIEW_DIR = task.directory;
     }
-    const binary = path.resolve(__dirname, "../src-tauri/target/debug", process.platform === "win32" ? "dispatch-review.exe" : "dispatch-review");
+    const binary = path.resolve(__dirname, "../target/debug", process.platform === "win32" ? "dispatch-review.exe" : "dispatch-review");
     const child = spawn(binary, ["wait", task.id], { env, stdio: ["ignore", "inherit", "inherit"] });
     child.on("error", error => { console.error(error.message); process.exitCode = 1; });
     child.on("exit", (code, signal) => { process.exitCode = code ?? (signal ? 1 : 0); });

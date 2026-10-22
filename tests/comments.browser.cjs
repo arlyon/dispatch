@@ -10,7 +10,7 @@ const assert = require("node:assert/strict");
 const cwd = path.resolve(__dirname, "..");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-comments-"));
 fs.chmodSync(temporary, 0o700);
-const binary = path.join(cwd, "src-tauri/target/debug/dispatch-review");
+const binary = path.join(cwd, "target/debug/dispatch-review");
 const request = process.argv[2] ? JSON.parse(fs.readFileSync(process.argv[2],"utf8")) : JSON.parse(execFileSync(binary, [cwd, "main", "HEAD"], {
   env: { ...process.env, DISPATCH_REVIEW_DIR: temporary }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
 }));

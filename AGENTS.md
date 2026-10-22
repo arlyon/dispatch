@@ -1,6 +1,6 @@
 # Dispatch
 
-Dispatch is the desktop review client. Ferropi is a separate lazy Pi dispatch daemon/library; do not merge their responsibilities.
+One Git repository and Cargo workspace: Dispatch (`src-tauri`) is the desktop review client; Ferropi (`crates/ferropi`) is the lazy Pi daemon/library; native RPC remains its own crate (`crates/pi-rpc`). Keep their responsibilities and processes separate, not their repositories.
 
 ## Current milestone
 

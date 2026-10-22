@@ -1,11 +1,17 @@
-# Dispatch: final peek edge and local-main checkpoint
+# Shared Dispatch repository
 
-Open **`570f897 → HEAD`**. Native feedback confirmed: **“great. jumps are smooth AF.”** The remaining screenshot showed the upper comment peek with a top border but no bottom border.
+Open **`bd808ae → HEAD`**. This corrects the unnecessary Git-repository split: Dispatch, Ferropi and pi-rpc now live together in `arlyon/dispatch`, retaining their existing crate boundaries.
 
-The real card's lower border was outside its clipped preview. A non-interactive border now follows the actual clipped bottom edge, with the same rounded lower corners. It does not add another card or preview, change geometry or scrolling, or cover controls. Hover color follows the original card.
+- `src-tauri/`: Dispatch desktop and review CLI.
+- `crates/ferropi/`: native Pi daemon/library.
+- `crates/pi-rpc/`: native Pi RPC transport, still its own crate.
+- Root Cargo workspace, shared `Cargo.lock` and `target/`. `mise run check` gates all three members; `mise run build` builds Ferropi and the desktop app.
+- The tracked CLI waiter, browser harness and docs use the workspace target paths.
 
-Please look at the upper peek's bottom outline and corners. Click it to reveal the same real card, and check ordinary scrolling and source jumps remain smooth.
+The imported daemon/RPC sources are unchanged from the previously tested Ferropi commit. No Pi protocol, session ownership, fork/history behavior or review UI is redesigned. Separate responsibilities and processes do not require separate repositories. The old standalone directory and research scratch remain untouched.
 
-The full gate, browser regression (including the new clipped-edge assertion and unchanged pinned/flow motion checks), and native build run before handoff. This is a local-main checkpoint authorised by Alex: Dispatch and Ferropi feature commits are folded into their respective local main branches, without pushing. Uncommitted Pi Durable research scratch remains untouched.
+Validation before handoff: workspace membership, full combined gate, real Pi offline fork/clone interoperability, existing browser regression and native build. This GUI uses the shared workspace's Ferropi executable. Automatic Finder/tool discovery remains a documented gap.
 
-**⌘S / Ctrl-S** submits explicit feedback after saving unfinished comments. A tracked CLI waiter is registered before opening the native GUI.
+After this push, the agreed feature order is **quiz mode → PR polling in Rust → interactive in-app agents → fork-to-terminal → Linear/Confluence context**, followed by end-to-end acceptance. These are not implemented by this consolidation.
+
+Submit explicit feedback with **⌘S / Ctrl-S**. The tracked CLI waiter is registered before GUI launch.

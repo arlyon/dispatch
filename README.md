@@ -1,6 +1,12 @@
 # Dispatch
 
-A Tauri desktop review client. Ferropi is its separate native Pi session daemon.
+One Git repository and Cargo workspace:
+
+- `src-tauri/` — **Dispatch**, the Tauri desktop review client and review CLI.
+- `crates/ferropi/` — **Ferropi**, the native Pi daemon/library.
+- `crates/pi-rpc/` — **ferropi-pi-rpc**, the native Pi RPC transport crate.
+
+The desktop and daemon retain separate responsibilities and processes, not separate repositories. See [Ferropi's guide](crates/ferropi/README.md) for its CLI, native sessions and protocol.
 
 The first self-hosting milestone is deliberately local: snapshot this branch, inspect highlighted diffs, collect line comments and explicitly submit feedback to the requesting agent. App-owned reviews start a tool-free native Pi reviewer through Ferropi. Caller-owned reviews are difit-style by default, with one-click opt-in to an independent reviewer. Automatic PR stack discovery is not wired yet.
 
@@ -14,7 +20,7 @@ mise run setup
 mise run dev
 ```
 
-`mise run build` creates `src-tauri/target/debug/bundle/macos/Dispatch.app`. Open it and choose **Review Dispatch** to snapshot the build's source checkout from `main` to committed `HEAD`.
+`mise run build` builds `target/debug/ferropi` and creates `target/debug/bundle/macos/Dispatch.app`. Open it and choose **Review Dispatch** to snapshot the build's source checkout from `main` to committed `HEAD`.
 
 On macOS the native traffic lights overlay the 48px app bar instead of occupying a separate title strip. Space is reserved for them; the app-bar background/title can drag the window. Buttons remain interactive, native controls/close guards remain native, and other platforms retain their normal decorations.
 
@@ -29,13 +35,13 @@ Click source text or a new-side line number to compose a comment; drag line numb
 Build the enqueue/wait CLI:
 
 ```sh
-mise exec -- cargo build --manifest-path src-tauri/Cargo.toml --bin dispatch-review
+mise exec -- cargo build -p dispatch --bin dispatch-review
 ```
 
 Queue any local committed range and optionally wait for human feedback:
 
 ```sh
-mise exec -- src-tauri/target/debug/dispatch-review /absolute/path/to/repository main HEAD --wait
+mise exec -- target/debug/dispatch-review /absolute/path/to/repository main HEAD --wait
 ```
 
 The CLI prints its review ID to stderr, and the completed result JSON (including the final summary) to stdout. Without `--wait`, it prints the immutable request JSON and exits.
@@ -45,7 +51,7 @@ The CLI prints its review ID to stderr, and the completed result JSON (including
 Waiting must be a tracked async command, not an untracked shell process or an assertion that the GUI is open. Attach to an existing request without creating another review/session:
 
 ```sh
-mise exec -- src-tauri/target/debug/dispatch-review wait REVIEW_ID
+mise exec -- target/debug/dispatch-review wait REVIEW_ID
 ```
 
 The command stays running until the result is published, then returns it as JSON and exits successfully. Attaching after completion returns the existing result immediately. `--wait` on the enqueue command combines snapshot creation and waiting when an async process runner can launch it directly.
@@ -78,7 +84,7 @@ The guide appears at the top of Chat and has a **Review guide & context** shortc
 
 ### Reviewer ownership and recovery
 
-The desktop launches `ferropi mount`, not Pi directly. Set `FERROPI_BIN` to the Ferropi executable and `PI_BINARY` to the Pi executable when they are not on the desktop process's PATH. **Review Dispatch** creates an app-owned review and starts its reviewer automatically. CLI callers default to caller-owned: no reviewer is started until **Start Pi reviewer** is clicked. Opt-in persists for that review. An enabled reviewer uses `reviews/<UUID>/agent.jsonl`; reopening a successful report hydrates native Pi history rather than running it again. **Retry Pi review · same session** restarts failed attempts without deleting history. Session identity is still per request UUID; stable PR identity across separate enqueues/revisions is unfinished.
+The desktop launches `ferropi mount`, not Pi directly. Set `FERROPI_BIN` to this workspace's `target/debug/ferropi` executable (absolute path) and `PI_BINARY` to the Pi executable when they are not on the desktop process's PATH. **Review Dispatch** creates an app-owned review and starts its reviewer automatically. CLI callers default to caller-owned: no reviewer is started until **Start Pi reviewer** is clicked. Opt-in persists for that review. An enabled reviewer uses `reviews/<UUID>/agent.jsonl`; reopening a successful report hydrates native Pi history rather than running it again. **Retry Pi review · same session** restarts failed attempts without deleting history. Session identity is still per request UUID; stable PR identity across separate enqueues/revisions is unfinished.
 
 The first reviewer receives only supplied source snapshots, with a 96 KB source-text budget. Binary/unavailable entries, lockfiles and unsupported file types are omitted and the scope is visible in Chat. Pi tools, MCP, extensions, skills, prompt templates and context-file discovery are disabled; the model cannot read other files, run tests, edit code or publish anything. Its report is static analysis, not verified test results.
 
@@ -102,6 +108,18 @@ mise run check
 An optional browser regression is in `tests/comments.browser.cjs`. It requires an existing Playwright module, Chrome, and the built `dispatch-review` CLI. Run it with `mise exec -- node tests/comments.browser.cjs`; `PLAYWRIGHT_MODULE` can point to an existing module directory. It snapshots this repository into a temporary private queue and mocks native IPC; it never submits to the live queue or starts a real Pi session. It checks real typing/caret retention across polling, wide/inline layouts, same-line draft-preserving deselection, attached-card geometry/no scroll fade, same-node real-card peeks and adjustable stack depth without duplicate DOM, nested wheel chaining, comment editing/cancellation/removal, Reviewed label/collapse/reopen, sanitized HTTPS images without referrers, local image thumbnails, global ⌘S submission and unfinished-draft guards, ranges, payload isolation, safe failure/retry, caching and Archive. The ordinary gate also runs pure geometry tests matching the drawing, anchor bounds and continuous movement.
 
 Read-only GitHub context loading exists behind a native command, but is not a prerequisite for local self-review. No PRs are created, updated, approved or commented on by this app.
+
+## Next milestones
+
+After the shared-repository consolidation, the agreed delivery order is:
+
+1. Quiz mode.
+2. PR sources and polling in Rust.
+3. Interactive in-app agents (beyond the existing static review/retry).
+4. Fork-to-terminal for native agent sessions.
+5. Linear / Confluence context.
+
+End-to-end acceptance closes this MVP; the wider prototype gaps below are not an additional automatic feature backlog. Source selection, daemon ownership and integration credentials still need to be confirmed before their respective implementations.
 
 ## Remaining from the recorded prototype requirements
 

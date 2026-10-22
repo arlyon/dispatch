@@ -10,10 +10,10 @@ run = "pnpm install --frozen-lockfile"
 run = "pnpm tauri dev"
 
 [tasks.build]
-run = "pnpm tauri build --debug --bundles app"
+run = ["cargo build -p ferropi", "pnpm tauri build --debug --bundles app"]
 
 [tasks.fix]
-run = "cargo fmt --manifest-path src-tauri/Cargo.toml"
+run = "cargo fmt --all"
 
 [tasks.check]
-run = ["pnpm exec tsc --noEmit", "node --test tests/sticky-geometry.test.mjs", "pnpm build", "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check", "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings", "cargo test --manifest-path src-tauri/Cargo.toml"]
+run = ["pnpm exec tsc --noEmit", "node --test tests/sticky-geometry.test.mjs", "pnpm build", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --all-features -- -D warnings", "cargo test --workspace --all-features"]
