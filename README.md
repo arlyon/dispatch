@@ -198,3 +198,51 @@ The local immutable snapshot → native review → explicit result → tracked C
 - Ferropi Windows transport; the current daemon uses Unix sockets.
 
 This is a comparison against the mockup behavior notes and recorded requirements, not a claim of a separate exhaustive formal PRD audit. These gaps are not silently included in the current UI task. Remote writes still require explicit authorization.
+
+## Pinned Linear / Confluence context
+
+In Chat, expand **Linear / Confluence context**, paste one Linear issue URL and/or
+one Confluence Cloud canonical page URL, then **Fetch & attach context**. Submit
+both URLs together: each review accepts exactly one immutable batch. Nothing
+starts a model automatically. Attach before **Start review** or **Quiz me**;
+initialization permanently freezes context (including failed starts). App-owned
+auto-started reviews are already frozen; use a fresh caller-owned CLI snapshot
+to attach context first. Existing native sessions and completed reviews are read-only.
+
+Configure only the desktop launch environment (no new sign-in or saved secrets):
+
+- `DISPATCH_LINEAR_API_KEY`: a Linear personal API key, sent only to the fixed
+  `https://api.linear.app/graphql` endpoint, using a read-only `issue(id:)` query.
+- `DISPATCH_CONFLUENCE_ORIGIN`: the exact approved HTTPS origin, e.g.
+  `https://example.atlassian.net` (no path, userinfo, query, or fragment).
+- `DISPATCH_CONFLUENCE_EMAIL` and `DISPATCH_CONFLUENCE_API_TOKEN`: Confluence Cloud
+  Basic auth, sent only to that origin's `GET /wiki/api/v2/pages/{id}?body-format=storage`.
+
+No GitHub credentials are reused. Source URLs must be HTTPS without userinfo,
+queries or fragments; Confluence URLs must be canonical
+`/wiki/spaces/SPACE/pages/ID[/title]` on the configured origin. Redirects are never
+followed, even on the same host. Missing credentials/errors attach nothing.
+Fetches are explicit, read-only, sequential, at most two responses, each capped
+at 1 MiB and 20 seconds. No crawling, linked-resource/image fetches or syncing.
+
+`linked-context.json` is published separately beside the original request/context
+and result, bound to review UUID and exact head. It records source URL, provider,
+identifier, provider version/update timestamp, capture time and truncation.
+Each body is limited to 12,000 UTF-8 bytes and title to 512 bytes (at most 25,024
+captured content bytes per batch, in addition to the unchanged 96 KB source
+budget). The UI shows captured text literally, including Confluence storage
+markup; no remote HTML/Markdown/images execute or load. Reviewer initialization
+and quiz grounding receive the same captured reference explicitly marked as
+untrusted data, not instructions or human feedback. A cross-process filesystem
+lock orders publication against native reviewer/quiz initialization and result
+publication; no lock spans network or model work. Existing files are never
+replaced. Recapturing a changed source requires a new review snapshot.
+
+API references: [Linear GraphQL](https://linear.app/developers/graphql),
+[Confluence Cloud v2 pages](https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-page/).
+Local fixture tests do not establish live provider auth or native GUI/model acceptance.
+
+Focused fixtures: `mise exec -- cargo test -p dispatch linked_context --lib` and
+`PLAYWRIGHT_MODULE=/existing/playwright mise exec -- node tests/linked-context.browser.cjs /path/to/own-source-request.json`
+(use installed Chrome). Browser fixtures mock IPC; Rust uses a private loopback
+HTTP server only under tests, with production HTTPS endpoints unchanged.

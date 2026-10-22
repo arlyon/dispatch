@@ -202,7 +202,7 @@ fn blob(repo: &Path, sha: &str, path: &str) -> Result<Vec<u8>> {
     git(repo, &["cat-file", "blob", &format!("{sha}:{path}")])
 }
 
-fn publish(path: &Path, value: &impl Serialize) -> Result<()> {
+pub(crate) fn publish(path: &Path, value: &impl Serialize) -> Result<()> {
     let mut temporary = tempfile::NamedTempFile::new_in(path.parent().ok_or("Missing parent")?)
         .map_err(|e| e.to_string())?;
     serde_json::to_writer_pretty(temporary.as_file_mut(), value).map_err(|e| e.to_string())?;
@@ -501,6 +501,7 @@ pub fn submit(root: &Path, id: &str, feedback: Feedback) -> Result<ReviewResult>
         status: Status::Complete,
         feedback,
     };
+    let _context_lock = crate::linked_context::lock(root, &request)?;
     publish(&directory(root, id)?.join("result.json"), &result)?;
     Ok(result)
 }
