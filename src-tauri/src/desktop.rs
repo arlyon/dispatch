@@ -677,6 +677,8 @@ fn run_gui(
         quit_requested: AtomicBool::new(false), quit_allowed: AtomicBool::new(false),
         pending_exit: Mutex::new(None), next_rpc: AtomicU64::new(1), replies: Mutex::new(HashMap::new()),
     }).setup(|app| {
+        // Discovery and checkout belong to this GUI process, not a second tray poller.
+        app.state::<crate::github::GitHub>().start();
         let handle = app.handle().clone();
         std::thread::spawn(move || {
             let mut reader = std::io::stdin().lock();
@@ -709,6 +711,10 @@ fn run_gui(
         }
     }).build(context).map_err(|e| e.to_string())?;
     app.run(|_app, _event| {
+        if matches!(_event, tauri::RunEvent::Exit) {
+            _app.state::<crate::github::GitHub>().stop();
+            _app.state::<crate::quiz::Quizzes>().stop_all();
+        }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = _event {
             let _ = show_gui(_app);
@@ -826,6 +832,7 @@ fn run_resident(
         } => api.prevent_exit(),
         tauri::RunEvent::Exit => {
             app.state::<Agents>().stop_all();
+            app.state::<crate::github::GitHub>().stop();
             // Tauri may terminate the process rather than unwind run(). Do not
             // rely on Drop alone to remove the private control socket.
             if let Err(error) = instance.cleanup() {

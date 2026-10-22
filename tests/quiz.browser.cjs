@@ -1,7 +1,7 @@
 // Own-source snapshot; native IPC is mocked. No live queue writes or model calls.
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
 const {spawn}=require('node:child_process'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const cwd=path.resolve(__dirname,'..'),port=process.env.DISPATCH_TEST_PORT||'14692',origin=`http://127.0.0.1:${port}`;
+const cwd=path.resolve(__dirname,'..'),port=process.env.DISPATCH_TEST_PORT||'14693',origin=`http://127.0.0.1:${port}`;
 const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
 (async()=>{
  const server=spawn('pnpm',['exec','vite','--host','127.0.0.1','--port',port,'--strictPort'],{cwd,stdio:'ignore'});let browser;
@@ -21,6 +21,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:callback=>{const id=next++;callbacks.set(id,callback);return id;},invoke:async(command,args)=>{
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}
     if(command==='plugin:event|unlisten')return;
+    if(command==='github_source')return {query:'Mock source',items:[],heads:[],total:0,partial:false,polling:false,lastSuccess:1,error:null};
     if(command==='desktop_bootstrap')return {checkpoint:JSON.parse(sessionStorage.getItem('desktop-checkpoint')||'null'),review:null};
     if(command==='desktop_hide'){window.__hideCalls.push(args);return;}
     if(command==='desktop_checkpoint_failed'){window.__checkpointFailures.push(args);return;}
@@ -170,8 +171,10 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
   await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.getByRole('button',{name:'Discard',exact:true}).click();await page.keyboard.press('Meta+s');await page.waitForFunction(()=>window.__submitted.length===1);
   assert.ok(await page.evaluate(()=>window.__starts.every(start=>!JSON.stringify(start.saved).includes('Quiz summary')&&!JSON.stringify(start.saved).includes('An answer with no assessment'))),'main run summaries do not become source-agent quiz context');
   const submitted=await page.evaluate(()=>window.__submitted[0].feedback);assert.equal(submitted.comments.length,1);assert.equal(submitted.comments[0].body,'Saved human note');assert.ok(!JSON.stringify(submitted).includes('assessment')&&!JSON.stringify(submitted).includes('Agent explicitly')&&!JSON.stringify(submitted).includes('Quiz summary')&&!JSON.stringify(submitted).includes('An answer with no assessment'),'quiz verdicts/answers never become submitted review feedback');
+  await page.locator('.inbox-notice').waitFor();await page.locator('.archive-section>summary').click();await page.locator('.archive-list .pr-summary').filter({hasText:request.title}).click();
   await page.getByText('Archived feedback · read-only',{exact:true}).waitFor();assert.equal(await page.locator('.original-chat .reviewer-offer').count(),0,'archived request without an agent never shows the offer');
-  await page.waitForFunction(()=>window.__hideCalls.length===1);assert.equal(await page.evaluate(()=>window.__closeCalls.length),1,'successful final submit requests normal close exactly once');
+  assert.equal(await page.evaluate(()=>window.__closeCalls.length),0,'publication keeps other queued work open');
+  await page.keyboard.press('Meta+s');await page.waitForFunction(()=>window.__hideCalls.length===1);assert.equal(await page.evaluate(()=>window.__closeCalls.length),1,'explicit archived-view close checkpoints once');
   assert.equal(await page.evaluate(()=>window.__destroyCalls.length),0,'normal close preserves the resident-owned checkpoint instead of destroying the GUI');
   const returnedQuizIds=await runSummaries.evaluateAll(elements=>elements.map(el=>el.dataset.quizRunId));
   await page.evaluate(()=>sessionStorage.setItem('desktop-checkpoint',JSON.stringify(window.__hideCalls[0].checkpoint)));
