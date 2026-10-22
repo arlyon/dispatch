@@ -1,7 +1,7 @@
 [tools]
 rust = "1.97.1"
 node = "22.19.0"
-"npm:pnpm" = "12.7.0"
+"github:pnpm/pnpm" = "12.7.0"
 
 [tasks.setup]
 run = "pnpm install --frozen-lockfile"
