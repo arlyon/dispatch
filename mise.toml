@@ -16,6 +16,10 @@ run = "node scripts/build.mjs --debug"
 description = "Build release installers for the current platform"
 run = "node scripts/build.mjs"
 
+[tasks."prototype:pr-capture"]
+description = "Throwaway preview: http://127.0.0.1:14690/?prototype=pr-capture&variant=A"
+run = 'pnpm exec vite --host "127.0.0.1" --port "14690" --strictPort'
+
 [tasks.fix]
 run = ["cargo fmt --all", "node scripts/frontend-fingerprint.mjs"]
 
