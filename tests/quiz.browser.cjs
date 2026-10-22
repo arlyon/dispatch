@@ -11,7 +11,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
   await page.addInitScript(request=>{
    const callbacks=new Map(),listeners=new Map();let next=1,quizCount=0,textCount=0;
    const otherReview={...request,id:crypto.randomUUID(),title:'Other own-source snapshot',files:request.files.filter(file=>file.path!=='src/App.tsx')};window.__otherReviewId=otherReview.id;
-   window.__answers=[];window.__starts=[];window.__ends=[];window.__submitted=[];
+   window.__answers=[];window.__starts=[];window.__ends=[];window.__submitted=[];window.__closeCalls=[];window.__destroyCalls=[];
    window.__emitAgent=payload=>{const id=listeners.get('review-agent');callbacks.get(id)?.({event:'review-agent',id:1,payload});};
    window.__emitQuiz=patch=>{
     if('text' in patch){const segments=[...window.__quiz.segments],last=segments.at(-1);if(last?.kind==='text')segments[segments.length-1]={...last,text:patch.text};else segments.push({kind:'text',id:'text-'+(++textCount),text:patch.text});patch={...patch,segments};delete patch.text;}
@@ -20,6 +20,8 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:callback=>{const id=next++;callbacks.set(id,callback);return id;},invoke:async(command,args)=>{
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}
     if(command==='plugin:event|unlisten')return;
+    if(command==='plugin:window|close'){window.__closeCalls.push(args);await callbacks.get(listeners.get('tauri://close-requested'))({event:'tauri://close-requested',id:1,payload:{}});return;}
+    if(command==='plugin:window|destroy'){window.__destroyCalls.push(args);return;}
     if(command==='list_reviews')return [request,otherReview].map(review=>({id:review.id,title:review.title,source:review.source,fileCount:review.files.length,complete:window.__submitted.some(submitted=>submitted.id===review.id)}));
     if(command==='open_review'){
      if(args.id===otherReview.id&&window.__delayOther){window.__otherOpenPending=true;await new Promise(resolve=>window.__releaseOther=()=>{window.__delayOther=false;resolve();});window.__otherOpenFinished=true;}
@@ -163,6 +165,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
   assert.ok(await page.evaluate(()=>window.__starts.every(start=>!JSON.stringify(start.saved).includes('Quiz summary')&&!JSON.stringify(start.saved).includes('An answer with no assessment'))),'main run summaries do not become source-agent quiz context');
   const submitted=await page.evaluate(()=>window.__submitted[0].feedback);assert.equal(submitted.comments.length,1);assert.equal(submitted.comments[0].body,'Saved human note');assert.ok(!JSON.stringify(submitted).includes('assessment')&&!JSON.stringify(submitted).includes('Agent explicitly')&&!JSON.stringify(submitted).includes('Quiz summary')&&!JSON.stringify(submitted).includes('An answer with no assessment'),'quiz verdicts/answers never become submitted review feedback');
   await page.getByText('Archived feedback · read-only',{exact:true}).waitFor();assert.equal(await page.locator('.original-chat .reviewer-offer').count(),0,'archived request without an agent never shows the offer');
+  await page.waitForFunction(()=>window.__destroyCalls.length===1);assert.equal(await page.evaluate(()=>window.__closeCalls.length),1,'successful final submit requests normal close exactly once');
   assert.deepEqual(errors,[]);console.log('PASS reviewer offer always last after quiz summaries, unchanged agent/retry/archive availability, chronological answer/text segments, stable assessment patches, once-only snapshot-scoped run summaries at main chat end, confirmed End counts and review-feedback isolation, progressive feedback/preparation with stable typing, explicit per-answer pass/fail/missing widgets isolated from review submission, delayed review-navigation ownership race, End then navigation, quiz right-bar lifecycle, source/quiz caret, saved-only context, real answer routing shape, failure/cancel, retained final feedback, preserved review DOM/drafts/scroll');
  }finally{await browser?.close();server.kill();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -65,6 +65,7 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
             window.__submitted.push(args);
             return results[args.id] = { version: 1, requestId: args.id, status: "complete", feedback: args.feedback };
           }
+          if (command === "plugin:window|close") return;
           if (command === "plugin:event|listen") return 1;
           if (command === "plugin:event|unlisten") return;
           throw Error(`Unexpected native call: ${command}`);
@@ -334,6 +335,7 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
     await page.locator(".archive-section>summary").click();
     await page.locator(".archive-list .active-pr").click();
     assert.equal(await summary.inputValue(), finalSummary);
+    assert.equal(await page.evaluate(()=>window.__calls.filter(call=>call.command==="plugin:window|close").length),1,"successful topbar submit requests normal close once");
     assert.deepEqual(errors, []);
     await page.screenshot({ path: path.join(os.tmpdir(), "dispatch-comments-regression.png") });
     console.log("PASS: native comment-jump command/frame profile, bounded animated alignment/manual interruption/reduced motion, overlay titlebar config/drag region, automatic/override animated inline threads, SVG chevron/no Markdown gap, focus/caret, same-line toggle, constrained cards/no scroll fade, same-node space-gated stacks/flush edges/native flow/pinned stability/no corrective writes/rounded upper reveal, paste caret, nested wheel chaining, edit/cancel/trash, Reviewed label/collapse/reopen, image chips/HTTPS safety, global Cmd-S submission, ranges, safe retry, cache and Archive. IPC mocked; live reviews untouched.");

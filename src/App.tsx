@@ -205,10 +205,11 @@ export default function App(){
     try{
       const result=await invoke<ReviewResult>("submit_review",{id:review.id,feedback:{head:review.source.head,comments:currentDraft().comments,summary:currentDraft().summary.trim()||null,threadStates:Object.entries(currentDraft().threadStates).map(([key,state])=>{const [path,side,line]=JSON.parse(key);return {path,side,line,state};})}});
       batch(()=>{setDrafts(all=>{const next={...all};delete next[review.id];return next;});if(request()?.id===review.id){setStored(result);setAnchor(undefined);}setQueue(all=>all.map(item=>item.id===review.id?{...item,complete:true}:item));});
-      await refresh();
+      try{await getCurrentWindow().close();}catch(error){setError(`Feedback submitted, but could not close window: ${String(error)}`);}
     }catch(error){setError(String(error));}finally{setOperation(undefined);}
   }
   async function submitOrClose(){
+    if(operation()==="submit")return;
     if((request()&&!complete())||quiz()||quizStarting()){await submit();return;}
     try{await getCurrentWindow().close();}catch(error){setError(`Cannot close window: ${String(error)}`);}
   }
@@ -236,7 +237,7 @@ export default function App(){
       const quizEvents=listen<QuizState>("review-quiz",event=>acceptQuiz(event.payload)).then(stop=>{if(disposed)stop();else stopQuiz=stop;});
       const agentEvents=listen<AgentState>("review-agent",event=>acceptAgent(event.payload)).then(async stop=>{if(disposed){stop();return;}stopAgents=stop;for(const state of await invoke<AgentState[]>("list_review_agents"))acceptAgent(state);});
       eventsReady=Promise.all([quizEvents,agentEvents]).then(()=>{if(!disposed)eventsAvailable=true;}).catch(error=>{setError(`Agent event stream: ${String(error)}`);});
-      void getCurrentWindow().onCloseRequested(event=>{if(hasFeedback()){event.preventDefault();setError("You have unsubmitted feedback. Submit it, or explicitly discard it, before closing.");setChatVisible(true);}}).then(stop=>{if(disposed)stop();else stopClose=stop;});
+      void getCurrentWindow().onCloseRequested(event=>{if(hasFeedback()){event.preventDefault();setError("You have unsubmitted feedback. Submit it, or explicitly discard it, before closing.");setChatVisible(true);}else if(quiz()||quizStarting()){event.preventDefault();setError("End the quiz before closing the window.");setChatVisible(true);}}).then(stop=>{if(disposed)stop();else stopClose=stop;});
     }
     void refresh();const timer=setInterval(()=>void refresh(),1500);
     const observer=new ResizeObserver(()=>{const style=getComputedStyle(workspace);const room=workspace.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)>=760;setGutterRoom(room);setHasGutter(window.innerWidth>=1180&&room);});observer.observe(workspace);
