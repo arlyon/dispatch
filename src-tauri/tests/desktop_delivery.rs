@@ -116,7 +116,7 @@ fn bg_can_wait_without_implicitly_completing_the_review() {
         .args(["--bg", "--wait"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let activation = receive.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -130,11 +130,14 @@ fn bg_can_wait_without_implicitly_completing_the_review() {
     let result = json!({"version":1,"requestId":id,"status":"complete","feedback":{
         "head":request["source"]["head"],"comments":[],"summary":"Explicit isolated test completion"
     }});
-    fs::write(
-        folder.join("result.json"),
-        serde_json::to_vec(&result).unwrap(),
-    )
-    .unwrap();
+    let mut published = tempfile::NamedTempFile::new_in(&folder).unwrap();
+    published
+        .write_all(&serde_json::to_vec(&result).unwrap())
+        .unwrap();
+    published.as_file().sync_all().unwrap();
+    published
+        .persist_noclobber(folder.join("result.json"))
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while child.try_wait().unwrap().is_none() {
         if Instant::now() > deadline {
@@ -144,7 +147,11 @@ fn bg_can_wait_without_implicitly_completing_the_review() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         serde_json::from_slice::<Value>(&output.stdout).unwrap(),
         result
