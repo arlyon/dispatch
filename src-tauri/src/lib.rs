@@ -1,5 +1,7 @@
 mod agents;
 mod attachments;
+mod quiz;
+mod quiz_stream;
 pub mod reviews;
 use serde_json::Value;
 use std::process::{Command, Stdio};
@@ -145,13 +147,41 @@ fn list_review_agents(agents: tauri::State<'_, agents::Agents>) -> Vec<agents::A
     agents.snapshots()
 }
 
+#[tauri::command]
+async fn start_quiz(
+    app: tauri::AppHandle,
+    id: String,
+    saved: reviews::Feedback,
+    quizzes: tauri::State<'_, quiz::Quizzes>,
+) -> Result<quiz::QuizState, String> {
+    let root = reviews::root()?;
+    let request = reviews::read_request(&root, &id)?;
+    quizzes.start(app, request, root, saved)
+}
+#[tauri::command]
+async fn answer_quiz(
+    id: String,
+    answer: quiz::Answer,
+    quizzes: tauri::State<'_, quiz::Quizzes>,
+) -> Result<(), String> {
+    quizzes.answer(&id, answer).await
+}
+#[tauri::command]
+async fn end_quiz(
+    id: String,
+    quizzes: tauri::State<'_, quiz::Quizzes>,
+) -> Result<quiz::QuizRunSummary, String> {
+    quizzes.stop(&id).await
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(agents::Agents::default())
+        .manage(quiz::Quizzes::default())
         .on_window_event(|window, event| {
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 window.state::<agents::Agents>().stop_all();
+                window.state::<quiz::Quizzes>().stop_all();
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -166,7 +196,10 @@ pub fn run() {
             submit_review,
             enqueue_self,
             start_review_agent,
-            list_review_agents
+            list_review_agents,
+            start_quiz,
+            answer_quiz,
+            end_quiz
         ])
         .run(tauri::generate_context!())
         .expect("error while running Dispatch");

@@ -1,0 +1,40 @@
+{
+  "feature": "quiz-mode",
+  "status": "implemented-awaiting-native-GUI-acceptance",
+  "presentation": "temporary-right-bar-replacement-preserving-original-DOM",
+  "session": "native-Pi-fork-through-Ferropi",
+  "bootstrap": "context-only-initialization-no-full-review-prerequisite",
+  "context": [
+    "settled-native-history",
+    "pinned-scoped-source-snapshot",
+    "opening-context",
+    "saved-comments",
+    "saved-thread-updates",
+    "published-summary-if-archived"
+  ],
+  "excluded": [
+    "unfinished-line-composers",
+    "unsubmitted-summary-text"
+  ],
+  "tools": [
+    "present_question",
+    "report_assessment"
+  ],
+  "answer": "choice-and-or-nonblank-explanation-via-native-matching-UI-response",
+  "completion": "feedback-remains-until-Done",
+  "cancellation": "quiz-only-with-pending-answer-confirmation;source-initialization-settles-independently",
+  "nonGoals": [
+    "overlay",
+    "scores",
+    "grading-engine",
+    "durable-drafts",
+    "automatic-review-feedback",
+    "shell-tools",
+    "remote-mutations",
+    "session-store-replacement"
+  ],
+  "assessment": "explicit-agent-reported-pass-or-fail-per-actual-answered-question-tool-ID;quiz-chat-only;missing-is-not-assessed",
+  "streaming": "ordered-stable-text-and-confirmed-answer-segments;delta-only-content-index-buffers;authoritative-finals;50ms-coalescing;read-only-question-preparation",
+  "navigation": "startup-invalidates-inflight-navigation;capture-saved-context-before-await",
+  "runSummary": "append-once-at-main-conversation-content-end-before-persistent-reviewer-offer-from-authoritative-ended-run;confirmed-pass-fail-and-nonzero-unassessed-counts;ended-early-marker;review-ID-and-head-scoped;memory-only-no-parent-turn-or-review-feedback"
+}

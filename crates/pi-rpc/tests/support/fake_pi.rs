@@ -20,6 +20,11 @@ fn main() {
     for line in io::stdin().lock().lines() {
         let request: Value = serde_json::from_str(&line.unwrap()).unwrap();
         let kind = request["type"].as_str().unwrap();
+        if kind == "extension_ui_response" {
+            println!("{}", json!({"type":"test_ui_reply", "record":request}));
+            io::stdout().flush().unwrap();
+            continue;
+        }
         let data = match kind {
             "get_state" => {
                 json!({"pid":std::process::id(),"isStreaming":false,"isCompacting":false,"pendingMessageCount":0,"sessionFile":session,"sessionName":name,"argv":args})

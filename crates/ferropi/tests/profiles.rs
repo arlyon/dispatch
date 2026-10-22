@@ -103,7 +103,55 @@ async fn settings_are_per_session_not_whichever_client_started_the_daemon() {
             .unwrap()
             .contains(&json!("--no-tools"))
     );
-    drop((ordinary, restricted, inherited, next, fork));
+    let parent_bytes = std::fs::read(root.path().join("restricted.jsonl")).unwrap();
+    let mut quiz = Client::fork_with_args(
+        &config,
+        mount("restricted.jsonl", None),
+        vec![
+            "--tools".into(),
+            "present_question,report_assessment".into(),
+            "--no-mcp".into(),
+        ],
+    )
+    .await
+    .unwrap();
+    let child = state(&mut quiz).await;
+    assert!(
+        !child["argv"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("--no-tools"))
+    );
+    assert!(
+        child["argv"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("present_question,report_assessment"))
+    );
+    assert!(
+        state(&mut restricted).await["argv"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("--no-tools"))
+    );
+    write_record(
+        &mut quiz.writer,
+        &json!({"type":"extension_ui_response","id":"dialog-from-pi","value":"answer"}),
+    )
+    .await
+    .unwrap();
+    loop {
+        let wire = read_record(&mut quiz.reader).await.unwrap().unwrap();
+        if wire["type"] == "event" {
+            assert_eq!(wire["record"]["record"]["id"], "dialog-from-pi");
+            break;
+        }
+    }
+    assert_eq!(
+        std::fs::read(root.path().join("restricted.jsonl")).unwrap(),
+        parent_bytes
+    );
+    drop((ordinary, restricted, inherited, next, fork, quiz));
     tokio::time::timeout(Duration::from_secs(6), async {
         while config.socket().exists() {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -111,4 +159,59 @@ async fn settings_are_per_session_not_whichever_client_started_the_daemon() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn quiz_fails_closed_before_mounting_on_an_older_daemon() {
+    let root = tempfile::tempdir_in("/tmp").unwrap();
+    let config = Config {
+        state_dir: root.path().into(),
+        pi: "must-not-start".into(),
+        pi_args: vec![],
+        executable: "must-not-start".into(),
+    };
+    let listener = tokio::net::UnixListener::bind(config.socket()).unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read, mut write) = stream.into_split();
+        let mut read = tokio::io::BufReader::new(read);
+        assert_eq!(
+            read_record(&mut read).await.unwrap().unwrap()["type"],
+            "hello"
+        );
+        write_record(
+            &mut write,
+            &json!({"type":"hello","protocol":1,"capabilities":["sessionPiArgs"]}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            read_record(&mut read).await.unwrap().is_none(),
+            "must not send mount/fork to an old daemon"
+        );
+    });
+    let error = match Client::fork_with_args(
+        &config,
+        MountRequest {
+            session: root.path().join("parent.jsonl"),
+            cwd: root.path().into(),
+            pi_args: None,
+        },
+        vec![
+            "--tools".into(),
+            "present_question,report_assessment".into(),
+        ],
+    )
+    .await
+    {
+        Ok(_) => panic!("old daemon accepted quiz"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("lacks quiz fork/UI capabilities")
+    );
+    server.await.unwrap();
+    assert!(!root.path().join("parent.jsonl").exists());
 }

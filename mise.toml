@@ -16,4 +16,4 @@ run = ["cargo build -p ferropi", "pnpm tauri build --debug --bundles app"]
 run = "cargo fmt --all"
 
 [tasks.check]
-run = ["pnpm exec tsc --noEmit", "node --test tests/sticky-geometry.test.mjs", "pnpm build", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --all-features -- -D warnings", "cargo test --workspace --all-features"]
+run = ["pnpm exec tsc --noEmit", "node --check src-tauri/extensions/quiz.mjs", "node --test tests/sticky-geometry.test.mjs", "pnpm build", "cargo fmt --all -- --check", "cargo clippy --workspace --all-targets --all-features -- -D warnings", "cargo test --workspace --all-features"]

@@ -34,6 +34,8 @@ enum Action {
     },
     /// Fork a settled native session into a separate mount until stdin closes.
     Fork {
+        #[arg(long, allow_hyphen_values = true)]
+        fork_pi_arg: Vec<String>,
         #[arg(long)]
         session: PathBuf,
         #[arg(long)]
@@ -67,15 +69,19 @@ async fn main() -> Result<()> {
         pi_args: args.pi_arg,
         executable: std::env::current_exe()?,
     };
-    let (session, cwd, request, fork) = match args.command {
+    let (session, cwd, request, fork, child_args) = match args.command {
         Action::Serve => return ferropi::serve(config).await,
         Action::Rpc {
             session,
             cwd,
             request,
-        } => (session, cwd, Some(request), false),
-        Action::Mount { session, cwd } => (session, cwd, None, false),
-        Action::Fork { session, cwd } => (session, cwd, None, true),
+        } => (session, cwd, Some(request), false, vec![]),
+        Action::Mount { session, cwd } => (session, cwd, None, false, vec![]),
+        Action::Fork {
+            session,
+            cwd,
+            fork_pi_arg,
+        } => (session, cwd, None, true, fork_pi_arg),
     };
     let mount = MountRequest {
         session,
@@ -83,7 +89,11 @@ async fn main() -> Result<()> {
         pi_args: None,
     };
     let mut client = if fork {
-        Client::fork(&config, mount).await?
+        if child_args.is_empty() {
+            Client::fork(&config, mount).await?
+        } else {
+            Client::fork_with_args(&config, mount, child_args).await?
+        }
     } else {
         Client::mount(&config, mount).await?
     };

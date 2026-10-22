@@ -44,3 +44,4 @@ export type Comment = {
 	endLine?: number;
 	body: string;
 };
+export type QuizRunSummary = { id:string;requestId:string;head:string;passed:number;failed:number;unassessed:number;endedEarly:boolean };

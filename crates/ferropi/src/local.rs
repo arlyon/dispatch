@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use ferropi_pi_rpc::{Command, Session};
+use ferropi_pi_rpc::{Command, Session, UiResponse};
 use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
 use kunobi_daemon::{
     ProcessLock,
@@ -125,7 +125,12 @@ impl Manager {
         Ok((session, gate))
     }
 
-    async fn fork(&self, source: &MountRequest, config: &Config) -> Result<(MountRequest, Lease)> {
+    async fn fork(
+        &self,
+        source: &MountRequest,
+        config: &Config,
+        child_args: Option<Vec<String>>,
+    ) -> Result<(MountRequest, Lease)> {
         let (parent, gate) = self.mount(source, config).await?;
         // Prevent client mutations while native Pi reads the persisted source tree.
         let _snapshot = gate.write().await;
@@ -137,6 +142,7 @@ impl Manager {
             .context("fork source is not registered")?
             .pi_args
             .clone();
+        let pi_args = child_args.unwrap_or(pi_args);
         let state = parent.request(Command::GetState, SETUP).await?;
         if !state.success {
             bail!("cannot inspect fork source: {:?}", state.error);
@@ -276,7 +282,7 @@ async fn handle(stream: UnixStream, manager: Arc<Manager>, config: Config) -> Re
     if request["type"] == "hello" {
         write_record(
             &mut write,
-            &json!({"type":"hello", "protocol":1, "capabilities":["sessionPiArgs"]}),
+            &json!({"type":"hello", "protocol":1, "capabilities":["sessionPiArgs", "forkPiArgs", "extensionUiReply"]}),
         )
         .await?;
         request = tokio::time::timeout(SETUP, read_record(&mut reader))
@@ -288,9 +294,13 @@ async fn handle(stream: UnixStream, manager: Arc<Manager>, config: Config) -> Re
         Some("fork_mount") => true,
         _ => bail!("first record must be mount or fork_mount"),
     };
+    let child_args: Option<Vec<String>> = request
+        .get("forkPiArgs")
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()?;
     let mount = normalize_mount(serde_json::from_value(request)?)?;
     let attached = if fork {
-        manager.fork(&mount, &config).await
+        manager.fork(&mount, &config, child_args).await
     } else {
         manager
             .mount(&mount, &config)
@@ -317,7 +327,13 @@ async fn handle(stream: UnixStream, manager: Arc<Manager>, config: Config) -> Re
         tokio::select! {
             line = lines.next_line() => {
                 let Some(line) = line? else { break; };
-                let call: Call = serde_json::from_str(&line)?;
+                let record: Value = serde_json::from_str(&line)?;
+                if record["type"] == "extension_ui_response" {
+                    let _command = gate.read().await;
+                    session.reply_ui(serde_json::from_value::<UiResponse>(record)?).await?;
+                    continue;
+                }
+                let call: Call = serde_json::from_value(record)?;
                 if call.command.changes_session() {
                     write_record(&mut write, &json!({"type":"response", "id":call.id, "success":false, "error":"use fork_mount; fork/clone must not change the identity of a shared mount"})).await?;
                     continue;
@@ -458,15 +474,29 @@ pub struct Client {
 }
 impl Client {
     pub async fn mount(config: &Config, request: MountRequest) -> Result<Self> {
-        Self::attach(config, request, "mount").await
+        Self::attach(config, request, "mount", None).await
     }
 
     /// Fork the persisted native session tree without changing existing mounts.
     pub async fn fork(config: &Config, source: MountRequest) -> Result<Self> {
-        Self::attach(config, source, "fork_mount").await
+        Self::attach(config, source, "fork_mount", None).await
     }
 
-    async fn attach(config: &Config, request: MountRequest, operation: &str) -> Result<Self> {
+    /// Child-only runtime options; requires explicit daemon capability negotiation.
+    pub async fn fork_with_args(
+        config: &Config,
+        source: MountRequest,
+        args: Vec<String>,
+    ) -> Result<Self> {
+        Self::attach(config, source, "fork_mount", Some(args)).await
+    }
+
+    async fn attach(
+        config: &Config,
+        request: MountRequest,
+        operation: &str,
+        child_args: Option<Vec<String>>,
+    ) -> Result<Self> {
         let mut mount = normalize_mount(request)?;
         if mount.pi_args.is_none() && !config.pi_args.is_empty() {
             mount.pi_args = Some(config.pi_args.clone());
@@ -489,7 +519,21 @@ impl Client {
                 "Ferropi daemon does not support session-scoped Pi options; restart it before mounting"
             );
         }
+        if child_args.is_some()
+            && !["forkPiArgs", "extensionUiReply"].iter().all(|capability| {
+                hello["capabilities"]
+                    .as_array()
+                    .is_some_and(|items| items.contains(&json!(capability)))
+            })
+        {
+            bail!(
+                "Ferropi daemon lacks quiz fork/UI capabilities; restart it before starting a quiz"
+            );
+        }
         let mut request = serde_json::to_value(mount)?;
+        if let Some(args) = child_args {
+            request["forkPiArgs"] = json!(args);
+        }
         request["type"] = json!(operation);
         write_record(&mut writer, &request).await?;
         let mounted = tokio::time::timeout(SETUP, read_record(&mut reader))

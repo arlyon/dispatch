@@ -24,6 +24,6 @@ serde_json = "1"
 directories = "6"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
-tokio = { version = "1", features = ["process", "io-util", "time"] }
+tokio = { version = "1", features = ["process", "io-util", "time", "macros", "sync"] }
 sha2 = "0.10"
 

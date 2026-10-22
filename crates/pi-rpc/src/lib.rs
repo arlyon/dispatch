@@ -70,6 +70,21 @@ impl Command {
     }
 }
 
+/// Dialog replies are one-way records, not correlated RPC commands.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "extension_ui_response")]
+pub struct UiResponse {
+    pub id: String,
+    #[serde(flatten)]
+    pub reply: UiReply,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum UiReply {
+    Value { value: String },
+    Cancelled { cancelled: bool },
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Response {
     pub id: String,
@@ -249,6 +264,16 @@ impl Session {
     /// `agent_end` does not clear activity: retries can run until `agent_settled`.
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+
+    pub async fn reply_ui(&self, response: UiResponse) -> Result<()> {
+        if *self.closed.borrow() {
+            bail!("Pi session is closed");
+        }
+        self.commands
+            .send(serde_json::to_value(response)?)
+            .await
+            .context("Pi command writer closed")
     }
 
     pub async fn request(&self, command: Command, deadline: Duration) -> Result<Response> {

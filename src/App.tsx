@@ -3,11 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { parseReport, type AgentState } from "./AgentReport";
-import type { CommentPlacement, CommentAnchor, ReviewDraft, ReviewRequest, ReviewResult, ReviewSummary, ReviewContext, ThreadStatus } from "./types";
+import type { CommentPlacement, CommentAnchor, QuizRunSummary, ReviewDraft, ReviewRequest, ReviewResult, ReviewSummary, ReviewContext, ThreadStatus } from "./types";
 import WorkspaceShell from "./components/WorkspaceShell";
 import TopBar from "./components/TopBar";
 import InboxPanel from "./components/InboxPanel";
 import ChatPanel from "./components/ChatPanel";
+import QuizPanel, { type QuizState } from "./components/QuizPanel";
 import ChangeContext from "./components/ChangeContext";
 import FileDiffPanel from "./components/FileDiffPanel";
 import GutterLayout from "./components/GutterLayout";
@@ -36,6 +37,11 @@ export default function App(){
   const [uploads,setUploads]=createSignal(0);
   const busy=()=>Boolean(operation())||uploads()>0;
   const [error,setError]=createSignal("");
+  const [quiz,setQuiz]=createSignal<QuizState>();
+  const [quizSummaries,setQuizSummaries]=createSignal<QuizRunSummary[]>([]);
+  const [quizStarting,setQuizStarting]=createSignal(false);
+  let previousChatVisible=true,previousChatAtEnd=false;
+  let startingQuizEvents:QuizState[]=[];
   const [agents,setAgents]=createSignal<Record<string,AgentState>>({});
   const [jump,setJump]=createSignal<CommentAnchor>();
   const [stored,setStored]=createSignal<ReviewResult|null>(null);
@@ -94,9 +100,29 @@ export default function App(){
     try{await eventsReady;if(disposed)return;if(!eventsAvailable)throw new Error("Native event stream is not available");acceptAgent(await invoke<AgentState>("start_review_agent",{id:review.id}));}
     catch(error){acceptAgent({requestId:review.id,phase:"error",sequence:(agents()[review.id]?.sequence??-1)+1,text:"",error:String(error),files:[],omitted:review.files.length,sessionPath:""});}
   }
-  createEffect(()=>{const review=request();if(review&&!complete()&&(context()?.owner==="app"||context()?.reviewerEnabled)&&!agents()[review.id])void startAgent(review);});
+  createEffect(()=>{const review=request();if(review&&!complete()&&(context()?.owner==="app"||context()?.reviewerEnabled)&&!quizStarting()&&!quiz()&&!agents()[review.id])void startAgent(review);});
+  function acceptQuiz(state:QuizState){if(disposed)return;if(quiz()?.id===state.id){if((quiz()?.sequence??-1)<state.sequence)setQuiz(state);}else if(quizStarting())startingQuizEvents.push(state);}
+  async function startQuiz(){
+    const review=request();if(!review||quiz()||quizStarting()||busy())return;
+    // Invalidate navigation already awaiting IPC before locking the quiz to this review.
+    openSequence++;opening=undefined;
+    const saved={head:review.source.head,comments:comments().map(comment=>({...comment})),summary:complete()?(summary().trim()||null):null,threadStates:Object.entries(currentDraft().threadStates).map(([key,state])=>{const [path,side,line]=JSON.parse(key);return {path,side,line,state};})};
+    const conversation=document.querySelector<HTMLElement>(".original-chat .conversation");
+    previousChatAtEnd=Boolean(conversation&&conversation.scrollHeight-conversation.clientHeight-conversation.scrollTop<24);
+    startingQuizEvents=[];setQuizStarting(true);setError("");previousChatVisible=chatVisible();setChatVisible(true);
+    try{await eventsReady;if(!eventsAvailable)throw new Error("Native event stream is not available");const initial=await invoke<QuizState>("start_quiz",{id:review.id,saved});setQuiz(initial);for(const state of startingQuizEvents)if(state.id===initial.id)acceptQuiz(state);}
+    catch(error){setError(`Cannot start quiz: ${String(error)}`);}finally{startingQuizEvents=[];setQuizStarting(false);}
+  }
+  function quizDone(summary:QuizRunSummary){
+    if(quizSummaries().some(previous=>previous.id===summary.id))return;
+    const active=quiz();if(!active||summary.id!==active.id||summary.requestId!==active.requestId||summary.head!==active.head){setError("Quiz summary does not match its source snapshot");return;}
+    const followEnd=previousChatAtEnd;
+    batch(()=>{setQuizSummaries(all=>all.some(previous=>previous.id===summary.id)?all:[...all,summary]);setQuiz(undefined);setChatVisible(previousChatVisible);});
+    if(followEnd)requestAnimationFrame(()=>{if(!quiz()&&request()?.id===summary.requestId&&request()?.source.head===summary.head){const conversation=document.querySelector<HTMLElement>(".original-chat .conversation");if(conversation)conversation.scrollTop=conversation.scrollHeight;}});
+  }
   function remember(){const review=request();if(review)navigation.set(review.id,{path:path(),filter:filter(),scroll:workspace?.scrollTop||0,mode:mode(),anchor:anchor()});}
   async function open(id:string){
+    if((quiz()||quizStarting())&&id!==request()?.id){setError("End the quiz before opening another review.");return;}
     const sequence=++openSequence;
     if(id===request()?.id){opening=undefined;return;}
     opening=id;
@@ -182,6 +208,10 @@ export default function App(){
       await refresh();
     }catch(error){setError(String(error));}finally{setOperation(undefined);}
   }
+  async function submitOrClose(){
+    if((request()&&!complete())||quiz()||quizStarting()){await submit();return;}
+    try{await getCurrentWindow().close();}catch(error){setError(`Cannot close window: ${String(error)}`);}
+  }
   async function pasteImage(event:ClipboardEvent){
     const target=event.target;
     if(!(target instanceof HTMLTextAreaElement)||!request()||complete()||operation()==="submit")return;
@@ -201,22 +231,24 @@ export default function App(){
   }
   function hasFeedback(){return uploads()>0||Object.values(drafts()).some(draft=>draft.comments.length||draft.summary.trim()||Object.keys(draft.threadStates).length||Object.values(draft.pending).some(item=>item.body.trim()));}
   onMount(()=>{
-    let stopClose:(()=>void)|undefined,stopAgents:(()=>void)|undefined;
+    let stopClose:(()=>void)|undefined,stopAgents:(()=>void)|undefined,stopQuiz:(()=>void)|undefined;
     if("__TAURI_INTERNALS__"in window){
-      eventsReady=listen<AgentState>("review-agent",event=>acceptAgent(event.payload)).then(async stop=>{if(disposed){stop();return;}stopAgents=stop;for(const state of await invoke<AgentState[]>("list_review_agents"))acceptAgent(state);eventsAvailable=true;}).catch(error=>{setError(`Agent event stream: ${String(error)}`);});
+      const quizEvents=listen<QuizState>("review-quiz",event=>acceptQuiz(event.payload)).then(stop=>{if(disposed)stop();else stopQuiz=stop;});
+      const agentEvents=listen<AgentState>("review-agent",event=>acceptAgent(event.payload)).then(async stop=>{if(disposed){stop();return;}stopAgents=stop;for(const state of await invoke<AgentState[]>("list_review_agents"))acceptAgent(state);});
+      eventsReady=Promise.all([quizEvents,agentEvents]).then(()=>{if(!disposed)eventsAvailable=true;}).catch(error=>{setError(`Agent event stream: ${String(error)}`);});
       void getCurrentWindow().onCloseRequested(event=>{if(hasFeedback()){event.preventDefault();setError("You have unsubmitted feedback. Submit it, or explicitly discard it, before closing.");setChatVisible(true);}}).then(stop=>{if(disposed)stop();else stopClose=stop;});
     }
     void refresh();const timer=setInterval(()=>void refresh(),1500);
     const observer=new ResizeObserver(()=>{const style=getComputedStyle(workspace);const room=workspace.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)>=760;setGutterRoom(room);setHasGutter(window.innerWidth>=1180&&room);});observer.observe(workspace);
-    const keyboard=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==="s"){event.preventDefault();event.stopPropagation();if(!event.repeat)void submit();return;}const target=event.target as HTMLElement;if(event.key==="/"&&!target.matches("input,textarea,[contenteditable=true]")){event.preventDefault();setInboxVisible(true);document.querySelector<HTMLInputElement>(".search input")?.focus();}};
+    const keyboard=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==="s"){event.preventDefault();event.stopPropagation();if(!event.repeat)void submitOrClose();return;}const target=event.target as HTMLElement;if(event.key==="/"&&!target.matches("input,textarea,[contenteditable=true]")){event.preventDefault();setInboxVisible(true);document.querySelector<HTMLInputElement>(".search input")?.focus();}};
     document.addEventListener("keydown",keyboard,true);
     document.addEventListener("paste",pasteImage);
-    onCleanup(()=>{disposed=true;openSequence++;clearInterval(timer);observer.disconnect();document.removeEventListener("keydown",keyboard,true);document.removeEventListener("paste",pasteImage);stopClose?.();stopAgents?.();});
+    onCleanup(()=>{disposed=true;openSequence++;clearInterval(timer);observer.disconnect();document.removeEventListener("keydown",keyboard,true);document.removeEventListener("paste",pasteImage);stopClose?.();stopAgents?.();stopQuiz?.();});
   });
-  return <WorkspaceShell inboxVisible={inboxVisible()} chatVisible={chatVisible()} onWorkspace={element=>workspace=element}
-    topbar={<TopBar placement={placement()} onPlacement={setPlacement} canBeside={gutterRoom()} stackDepth={stackDepth()} onStackDepth={setStackDepth} wide={useGutter()} request={request()} inboxVisible={inboxVisible()} chatVisible={chatVisible()} complete={complete()} busy={busy()} submitting={operation()==="submit"} commentCount={comments().length} hasSummary={Boolean(summary().trim())} onInbox={()=>setInboxVisible(!inboxVisible())} onChat={()=>setChatVisible(!chatVisible())} onSubmit={()=>void submit()}/>}
+  return <WorkspaceShell inboxVisible={inboxVisible()} chatVisible={Boolean(quiz())||chatVisible()} onWorkspace={element=>workspace=element}
+    topbar={<TopBar placement={placement()} onPlacement={setPlacement} canBeside={gutterRoom()} stackDepth={stackDepth()} onStackDepth={setStackDepth} wide={useGutter()} request={request()} inboxVisible={inboxVisible()} chatVisible={chatVisible()} complete={complete()} busy={busy()} submitting={operation()==="submit"} commentCount={comments().length} hasSummary={Boolean(summary().trim())} onInbox={()=>setInboxVisible(!inboxVisible())} onChat={()=>{if(!quiz())setChatVisible(!chatVisible());}} onSubmit={()=>void submit()}/>}
     inbox={<InboxPanel reviews={queue()} request={request()} selectedId={request()?.id} activePath={path()} filter={filter()} agents={agents()} readReady={request()?.files.every(file=>Boolean(identities()[file.path]))||false} readPaths={readPaths()} findingCounts={findingCounts()} busy={busy()} onSelect={id=>void open(id)} onSelectFile={selectFile} onFilter={setFilter} onRead={markRead} onRefresh={()=>void refresh()} onNew={()=>void selfReview()}/>}
-    chat={<ChatPanel attachments={attachmentLinks()} uploading={uploads()>0} groups={reviewGroups().filter(group=>group.messages.some(message=>message.author!=="Pi"))} onReply={reply} onState={setThreadState} stateCount={Object.keys(currentDraft().threadStates).length} context={context()} onStartReview={()=>{const review=request();if(review)void startAgent(review);}} request={request()} agent={activeAgent()} complete={complete()} submitting={operation()==="submit"} error={error()} comments={comments()} pending={complete()?[]:pending()} summary={summary()} dismissed={dismissedForReview()} unsent={complete()?currentDraft():undefined} onSummary={value=>updateDraft(draft=>({...draft,summary:value}))} onJump={jumpTo} onResume={pending=>jumpTo(pending,true)} onRemove={removeComment} onClose={()=>setChatVisible(false)}/>}
+    chat={<div class="quiz-panel-host"><div class="original-chat" classList={{"quiz-underneath":Boolean(quiz())}} inert={Boolean(quiz())}><ChatPanel quizSummaries={quizSummaries().filter(summary=>summary.requestId===request()?.id&&summary.head===request()?.source.head)} onQuiz={()=>void startQuiz()} quizDisabled={busy()||quizStarting()} quizStarting={quizStarting()} attachments={attachmentLinks()} uploading={uploads()>0} groups={reviewGroups().filter(group=>group.messages.some(message=>message.author!=="Pi"))} onReply={reply} onState={setThreadState} stateCount={Object.keys(currentDraft().threadStates).length} context={context()} onStartReview={()=>{const review=request();if(review)void startAgent(review);}} request={request()} agent={activeAgent()} complete={complete()} submitting={operation()==="submit"} error={error()} comments={comments()} pending={complete()?[]:pending()} summary={summary()} dismissed={dismissedForReview()} unsent={complete()?currentDraft():undefined} onSummary={value=>updateDraft(draft=>({...draft,summary:value}))} onJump={jumpTo} onResume={pending=>jumpTo(pending,true)} onRemove={removeComment} onClose={()=>setChatVisible(false)}/></div><Show when={quiz()}>{state=><QuizPanel state={state()} onDone={quizDone} onJump={jumpTo}/>}</Show></div>}
     footer={<footer class="statusbar"><span class="status-dot"/><span>{operation()==="snapshot"?"Creating local snapshot…":request()?`${readPaths().size}/${request()!.files.length} files read`:"Local review inbox"}</span><span class="status-divider"/><span class="status-file">{path()}</span><span class="spacer"/><span>{activeAgent()?"Native Pi · static inspection":"Immutable local snapshots"}</span><span class="status-divider"/><span>No GitHub publishing</span></footer>}
   >
     <Show when={error()}><div class="error-banner" role="alert"><span>{error()}</span><Show when={hasFeedback()}><button disabled={busy()} onClick={()=>{setDrafts({});setAnchor(undefined);setError("");}}>Discard all unsubmitted feedback</button></Show><button class="iconbtn" aria-label="Dismiss message" onClick={()=>setError("")}><Icon name="close"/></button></div></Show>
