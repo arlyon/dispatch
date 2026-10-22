@@ -1,9 +1,14 @@
+export type CaptureProgress = { url:string; captureId?:string; readOrder?:number|null; phase:"metadata"|"comparison"|"clone"|"fetch"|"checkout"|"files"; head?:string|null; done?:number; total?:number|null };
+export type GitHubHead = { url:string; head:string|null; error:string|null; checking?:boolean; readOrder?:number };
+export type GitHubPR = { url:string; repo:string; number:number; title:string; author:string; updatedAt:string; createdAt?:string };
+export type GitHubSource = { query:string; items:GitHubPR[]; total:number|null; partial:boolean; polling:boolean; lastSuccess:number|null; error:string|null; heads?:GitHubHead[] };
 export type Source = {
 	repo: string;
 	base: string;
 	head: string;
 	baseRef: string;
 	headRef: string;
+	prUrl?: string;
 };
 export type ReviewFile = {
 	path: string;
@@ -24,6 +29,8 @@ export type ReviewSummary = {
 	title: string;
 	source: Source;
 	fileCount: number;
+	intakeAt?: number;
+	checkoutReady?: boolean;
 	complete: boolean;
 };
 export type ReviewContext = { guide: string; comments: Comment[]; owner?: "caller" | "app"; reviewerEnabled?: boolean };
