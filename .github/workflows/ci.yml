@@ -90,5 +90,11 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.verify_macos_signing
     needs: check-and-package
     uses: ./.github/workflows/sign-macos.yml
+    secrets:
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
     with:
       ref: ${{ inputs.ref || github.sha }}

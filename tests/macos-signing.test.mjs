@@ -113,12 +113,22 @@ test("verification fails on any nested signature, team, runtime, timestamp, tick
   } finally { f.close(); }
 });
 
-test("only the gated signing workflow handles Apple secrets and release publication needs its artifact", () => {
+test("only dedicated signing calls forward the required Apple secrets and publication needs the signed artifact", () => {
   const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
   const signing = readFileSync(new URL("../.github/workflows/sign-macos.yml", import.meta.url), "utf8");
   const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   assert.match(ci, /github\.event_name == 'workflow_dispatch' && inputs\.verify_macos_signing/);
-  assert.ok(!ci.includes("secrets.MACOS_CERTIFICATE") && !ci.includes("secrets.APP_STORE_CONNECT"));
+  const ordinaryCI = ci.split("\n  verify-signing:")[0];
+  assert.ok(!ordinaryCI.includes("secrets.MACOS_CERTIFICATE") && !ordinaryCI.includes("secrets.APP_STORE_CONNECT"));
+  const manualCaller = ci.split("\n  verify-signing:")[1];
+  const releaseCaller = release.split("\n  sign-macos:")[1].split("\n  publish:")[0];
+  for (const name of ["MACOS_CERTIFICATE_P12_BASE64", "MACOS_CERTIFICATE_PASSWORD", "APP_STORE_CONNECT_ISSUER_ID", "APP_STORE_CONNECT_KEY_ID", "APP_STORE_CONNECT_PRIVATE_KEY"]) {
+    assert.ok(signing.includes(`${name}:\n        required: true`), `${name} must be declared required`);
+    for (const caller of [manualCaller, releaseCaller]) {
+      assert.ok(caller.includes(name + ": ${{ secrets." + name + " }}"), `${name} must be explicitly forwarded`);
+    }
+  }
+  assert.ok(!manualCaller.includes("secrets: inherit") && !releaseCaller.includes("secrets: inherit"));
   assert.ok(ci.includes('"$SOURCE_REF" =~ ^[a-f0-9]{40}$'), "manual signing sources are immutable");
   assert.match(signing, /github\.event_name != 'pull_request' && github\.event_name != 'pull_request_target'/);
   assert.match(signing, /environment:\n\s+name: production/);

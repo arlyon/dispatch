@@ -4,9 +4,20 @@ on:
   workflow_call:
     inputs:
       ref:
-        description: Maintainer-approved source ref, resolved before credential approval
+        description: Trusted source ref, resolved before credentials are loaded
         required: true
         type: string
+    secrets:
+      MACOS_CERTIFICATE_P12_BASE64:
+        required: true
+      MACOS_CERTIFICATE_PASSWORD:
+        required: true
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: true
+      APP_STORE_CONNECT_KEY_ID:
+        required: true
+      APP_STORE_CONNECT_PRIVATE_KEY:
+        required: true
 
 permissions:
   contents: read

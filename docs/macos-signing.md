@@ -7,16 +7,16 @@ Configuration can be performed from Linux. Signing, Apple notarization tooling a
 ## Security boundary
 
 - Ordinary pull-request CI remains ad-hoc signed and has no Apple secrets.
-- Only the dedicated signing job references the `production` environment.
-- Configure a required human reviewer on that environment **before adding credentials**. Offbeat's environment name alone does not imply approval protection.
-- The source ref is resolved in an unprivileged job. Approval links to that immutable commit; the credential-bearing job checks out that exact SHA.
-- Approve only reviewed source. Its build scripts run in the signing job and can access that job's signing identity.
+- Only the dedicated signing job references the `production` environment. Its reusable workflow declares the five required signing secrets, and both callers explicitly forward those names. GitHub resolves unforwarded environment secrets to empty strings; a job-level environment alone is insufficient. No blanket `secrets: inherit` is used.
+- There is no required deployment reviewer; the user explicitly removed that extra gate. The signing job starts automatically after its prerequisite checks pass.
+- The source ref is resolved in an unprivileged job, and the credential-bearing job checks out that exact SHA. The environment link identifies that commit; it is not an approval step.
+- Run only trusted, reviewed source. Its build scripts run in the signing job and can access that job's signing identity.
 - Missing credentials, the wrong certificate type/team, rejected notarization, missing tickets or failed Gatekeeper assessment fail the job. There is no ad-hoc fallback.
 - Private files are confined to a mode-0700 runner directory. Cleanup restores the original keychain search list and removes credentials, including on failure. No private material is uploaded as an artifact.
 
 ## One-time provisioning
 
-Create Dispatch's GitHub `production` environment with a required reviewer, then configure:
+Configure these values in Dispatch's GitHub `production` signing environment:
 
 | Kind | Name | Source |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ A Developer ID certificate request and private key can be generated with OpenSSL
 
 ## Non-publishing verification
 
-After this workflow change is available through the repository's CI workflow, use **CI → Run workflow → verify_macos_signing = true**. Leave `ref` empty to use the chosen workflow commit, or supply a full commit SHA. Named source branches are rejected for signing verification so the source cannot change between ordinary checks and signing approval. Normal checks/packages must pass first. Review and approve the exact source commit in the protected environment.
+After this workflow change is available through the repository's CI workflow, use **CI → Run workflow → verify_macos_signing = true**. Leave `ref` empty to use the chosen workflow commit, or supply a full commit SHA. Named source branches are rejected for signing verification so the source cannot change between ordinary checks and signing approval. Normal checks/packages must pass first. The signing job then starts automatically; no deployment approval is required.
 
 The signed job:
 
