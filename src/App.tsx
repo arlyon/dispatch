@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { parseReport, type AgentState } from "./AgentReport";
+import { validDesktopData, type Bootstrap, type Checkpoint, type DesktopData, type Navigation } from "./desktop";
 import type { CommentPlacement, CommentAnchor, ReviewDraft, ReviewRequest, ReviewResult, ReviewSummary, ReviewContext, ThreadStatus } from "./types";
 import WorkspaceShell from "./components/WorkspaceShell";
 import TopBar from "./components/TopBar";
@@ -18,12 +19,12 @@ import Icon from "./components/Icon";
 import "./App.css";
 import "./components/refinement.css";
 import "./components/iteration.css";
+import "./components/typography.css";
 
 const emptyDraft=():ReviewDraft=>({comments:[],summary:"",pending:{},threadStates:{}});
 const readStorage="dispatch.reviewed-files.v1";
 function loadReadMarkers(){try {const saved=JSON.parse(localStorage.getItem(readStorage)||"[]");return new Set<string>(Array.isArray(saved)?saved.filter(value=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value)):[]);}catch{return new Set<string>();}}
 const anchorKey=(anchor:CommentAnchor)=>JSON.stringify([anchor.path,anchor.side,anchor.line]);
-type Navigation={path:string;filter:string;scroll:number;mode:DiffMode;anchor?:CommentAnchor};
 
 export default function App(){
   const [queue,setQueue]=createSignal<ReviewSummary[]>([]);
@@ -67,6 +68,9 @@ export default function App(){
   let workspace!:HTMLElement;
   let eventsReady:Promise<void>=Promise.resolve(),eventsAvailable=false,disposed=false;
   let opening:string|undefined,openSequence=0,refreshSequence=0;
+  const [desktopReady,setDesktopReady]=createSignal(false);
+  let desktopVisible=true,restoreFailed=false,checkpointRevision=0,resumeId:string|undefined,liveReviewId:string|undefined;
+  let checkpointTimer:ReturnType<typeof setTimeout>|undefined;
   const currentDraft=()=>drafts()[request()?.id||""]||emptyDraft();
   const complete=createMemo(()=>Boolean(stored()?.requestId===request()?.id&&stored()||queue().find(item=>item.id===request()?.id)?.complete));
   const activeAgent=()=>agents()[request()?.id||""];
@@ -114,7 +118,7 @@ export default function App(){
     }catch(error){if(sequence===openSequence)setError(String(error));}
     finally{if(sequence===openSequence)opening=undefined;}
   }
-  async function refresh(){
+  async function refresh(autoOpen=true){
     const sequence=++refreshSequence;
     try{
       const entries=await invoke<ReviewSummary[]>("list_reviews");
@@ -122,7 +126,7 @@ export default function App(){
       setQueue(previous=>entries.map(item=>({...item,complete:item.complete||previous.some(old=>old.id===item.id&&old.complete)})));
       const review=request();
       if(review&&entries.some(item=>item.id===review.id&&item.complete)&&stored()?.requestId!==review.id){const result=await invoke<ReviewResult|null>("review_result",{id:review.id});if(request()?.id===review.id)setStored(result);}
-      if(!request()&&!opening){const next=entries.find(item=>!item.complete);if(next)await open(next.id);}
+      if(autoOpen&&!request()&&!opening){const next=entries.find(item=>!item.complete);if(next)await open(next.id);}
     }catch(error){if(!disposed)setError(String(error));}
   }
   async function selfReview(){
@@ -200,18 +204,81 @@ export default function App(){
     }}catch(error){setError(`Image paste: ${String(error)}`);}finally{setUploads(count=>count-1);}
   }
   function hasFeedback(){return uploads()>0||Object.values(drafts()).some(draft=>draft.comments.length||draft.summary.trim()||Object.keys(draft.threadStates).length||Object.values(draft.pending).some(item=>item.body.trim()));}
+  function desktopData():DesktopData {
+    remember();
+    return {drafts:drafts(),navigation:Object.fromEntries(navigation),selectedId:request()?.id||resumeId,
+      placement:placement(),stackDepth:stackDepth(),inboxVisible:inboxVisible(),chatVisible:chatVisible(),expanded:expanded()};
+  }
+  function checkpoint():Checkpoint {
+    if(restoreFailed)throw Error("Saved desktop state could not be restored. Keep this window open; the resident still holds the original checkpoint.");
+    return {version:1,revision:++checkpointRevision,hasFeedback:hasFeedback(),data:desktopData()};
+  }
+  async function hideDesktop(){
+    if(busy()){setError("Wait for the current operation or image upload before hiding Dispatch.");return;}
+    try{await invoke("desktop_hide",{checkpoint:checkpoint()});}
+    catch(error){setError(`Cannot safely hide Dispatch: ${String(error)}`);}
+  }
+  async function quitDesktop(){
+    if(restoreFailed||hasFeedback()||busy()){
+      setError("You have unsubmitted feedback or an operation in progress. Submit or explicitly discard feedback before quitting.");setChatVisible(true);
+      await invoke("desktop_quit",{checkpoint:null}).catch(error=>setError(String(error)));return;
+    }
+    await invoke("desktop_quit",{checkpoint:checkpoint()}).catch(error=>setError(String(error)));
+  }
+  createEffect(()=>{
+    // Observe lightweight state only. Source snapshots/editor instances stay out
+    // of the checkpoint; the resident can restore those from immutable requests.
+    drafts();path();filter();mode();anchor();placement();stackDepth();inboxVisible();chatVisible();expanded();request();
+    if(!desktopReady()||restoreFailed)return;
+    clearTimeout(checkpointTimer);
+    checkpointTimer=setTimeout(()=>{try{void invoke("desktop_checkpoint",{checkpoint:checkpoint(),token:null}).catch(error=>setError(`Draft checkpoint: ${String(error)}`));}catch(error){setError(String(error));}},300);
+  });
   onMount(()=>{
     let stopClose:(()=>void)|undefined,stopAgents:(()=>void)|undefined;
+    const desktopStops:(()=>void)[]=[];
     if("__TAURI_INTERNALS__"in window){
       eventsReady=listen<AgentState>("review-agent",event=>acceptAgent(event.payload)).then(async stop=>{if(disposed){stop();return;}stopAgents=stop;for(const state of await invoke<AgentState[]>("list_review_agents"))acceptAgent(state);eventsAvailable=true;}).catch(error=>{setError(`Agent event stream: ${String(error)}`);});
-      void getCurrentWindow().onCloseRequested(event=>{if(hasFeedback()){event.preventDefault();setError("You have unsubmitted feedback. Submit it, or explicitly discard it, before closing.");setChatVisible(true);}}).then(stop=>{if(disposed)stop();else stopClose=stop;});
-    }
-    void refresh();const timer=setInterval(()=>void refresh(),1500);
+      void (async()=>{
+        try{
+          const subscribe=async<T,>(name:string,callback:(payload:T)=>void)=>{const stop=await listen<T>(name,event=>callback(event.payload));if(disposed)stop();else desktopStops.push(stop);};
+          await subscribe<string|null>("desktop-open-review",id=>{if(id){liveReviewId=id;resumeId=id;if(desktopReady())void open(id);}});
+          await subscribe<boolean>("desktop-visibility",visible=>{desktopVisible=visible;if(visible&&desktopReady())void refresh();});
+          await subscribe("desktop-queue-changed",()=>{if(desktopVisible&&desktopReady())void refresh();});
+          await subscribe("desktop-hide",()=>void hideDesktop());
+          await subscribe("desktop-quit",()=>void quitDesktop());
+          await subscribe<string>("desktop-error",message=>setError(message));
+          await subscribe<number>("desktop-checkpoint",token=>{
+            try{
+              if(busy())throw Error("A review operation or image upload is still running");
+              void invoke("desktop_checkpoint",{token,checkpoint:checkpoint()}).catch(error=>invoke("desktop_checkpoint_failed",{token,error:String(error)}).catch(error=>setError(String(error))));
+            }catch(error){void invoke("desktop_checkpoint_failed",{token,error:String(error)}).catch(error=>setError(String(error)));}
+          });
+          stopClose=await getCurrentWindow().onCloseRequested(event=>{event.preventDefault();void hideDesktop();});
+          if(disposed){stopClose();return;}
+          const bootstrap=await invoke<Bootstrap>("desktop_bootstrap");
+          if(bootstrap.checkpoint){
+            const saved=bootstrap.checkpoint;
+            if(saved.version!==1||!Number.isSafeInteger(saved.revision)||saved.revision<0||!validDesktopData(saved.data))throw Error("Unsupported saved desktop state");
+            checkpointRevision=saved.revision;const data=saved.data;
+            for(const [id,entry] of Object.entries(data.navigation))navigation.set(id,entry);
+            batch(()=>{setDrafts(data.drafts);setPlacement(data.placement);setStackDepth(data.stackDepth);setInboxVisible(data.inboxVisible);setChatVisible(data.chatVisible);setExpanded(data.expanded);});
+            resumeId=data.selectedId;
+          }
+          resumeId=liveReviewId||bootstrap.review||resumeId;
+          await invoke("desktop_ready");setDesktopReady(true);
+          await refresh(false);if(resumeId)await open(resumeId);else await refresh();
+        }catch(error){
+          restoreFailed=true;setError(`Desktop restore failed: ${String(error)}. Keep Dispatch running to preserve its saved drafts.`);
+          await invoke("desktop_ready").catch(error=>setError(String(error)));
+        }
+      })();
+    }else{void refresh();}
+    const timer=setInterval(()=>{if(desktopVisible&&desktopReady())void refresh();},1500);
     const observer=new ResizeObserver(()=>{const style=getComputedStyle(workspace);const room=workspace.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)>=760;setGutterRoom(room);setHasGutter(window.innerWidth>=1180&&room);});observer.observe(workspace);
     const keyboard=(event:KeyboardEvent)=>{if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==="s"){event.preventDefault();event.stopPropagation();if(!event.repeat)void submit();return;}const target=event.target as HTMLElement;if(event.key==="/"&&!target.matches("input,textarea,[contenteditable=true]")){event.preventDefault();setInboxVisible(true);document.querySelector<HTMLInputElement>(".search input")?.focus();}};
     document.addEventListener("keydown",keyboard,true);
     document.addEventListener("paste",pasteImage);
-    onCleanup(()=>{disposed=true;openSequence++;clearInterval(timer);observer.disconnect();document.removeEventListener("keydown",keyboard,true);document.removeEventListener("paste",pasteImage);stopClose?.();stopAgents?.();});
+    onCleanup(()=>{disposed=true;openSequence++;clearInterval(timer);clearTimeout(checkpointTimer);observer.disconnect();document.removeEventListener("keydown",keyboard,true);document.removeEventListener("paste",pasteImage);stopClose?.();stopAgents?.();for(const stop of desktopStops)stop();});
   });
   return <WorkspaceShell inboxVisible={inboxVisible()} chatVisible={chatVisible()} onWorkspace={element=>workspace=element}
     topbar={<TopBar placement={placement()} onPlacement={setPlacement} canBeside={gutterRoom()} stackDepth={stackDepth()} onStackDepth={setStackDepth} wide={useGutter()} request={request()} inboxVisible={inboxVisible()} chatVisible={chatVisible()} complete={complete()} busy={busy()} submitting={operation()==="submit"} commentCount={comments().length} hasSummary={Boolean(summary().trim())} onInbox={()=>setInboxVisible(!inboxVisible())} onChat={()=>setChatVisible(!chatVisible())} onSubmit={()=>void submit()}/>}
