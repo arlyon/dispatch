@@ -40,7 +40,7 @@ export type ReviewResult = {
 };
 export type CommentPlacement = "auto" | "inline" | "beside";
 export type PendingComment = CommentAnchor & { body: string; editingIndex?:number };
-export type ReviewDraft = { comments: Comment[]; summary: string; pending: Record<string, PendingComment>; threadStates: Record<string, ThreadStatus> };
+export type ReviewDraft = { comments: Comment[]; summary: string; pending: Record<string, PendingComment>; threadStates: Record<string, ThreadStatus>; agentQuestion?:string };
 export type CommentAnchor = { path: string; line: number; endLine?: number; side: "old" | "new" };
 export type ThreadStatus = "open" | "resolved" | "dismissed";
 export type ThreadUpdate = CommentAnchor & { state: ThreadStatus };

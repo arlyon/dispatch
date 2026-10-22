@@ -21,7 +21,7 @@ const anchor = (value: unknown): value is CommentAnchor => object(value) && type
   (value.endLine === undefined || typeof value.endLine === "number" && Number.isInteger(value.endLine) && value.endLine >= value.line);
 const comment = (value: unknown) => object(value) && typeof value.body === "string" && anchor(value);
 const draft = (value: unknown) => object(value) && Array.isArray(value.comments) && value.comments.every(comment) &&
-  typeof value.summary === "string" && object(value.pending) && Object.values(value.pending).every(item => comment(item) &&
+  typeof value.summary === "string" && (value.agentQuestion === undefined || typeof value.agentQuestion === "string") && object(value.pending) && Object.values(value.pending).every(item => comment(item) &&
     object(item) && (item.editingIndex === undefined || typeof item.editingIndex === "number" && Number.isInteger(item.editingIndex) && item.editingIndex >= 0)) &&
   object(value.threadStates) && Object.values(value.threadStates).every(state => ["open", "resolved", "dismissed"].includes(String(state)));
 

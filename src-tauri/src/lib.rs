@@ -219,6 +219,18 @@ async fn start_review_agent(
     agents.start(app, request, root)
 }
 #[tauri::command]
+async fn ask_review_agent(
+    app: tauri::AppHandle,
+    id: String,
+    message: String,
+    agents: tauri::State<'_, agents::Agents>,
+) -> Result<agents::AgentState, String> {
+    if desktop::is_gui(&app) {
+        return desktop::rpc(&app, desktop_ipc::Rpc::AskAgent { id, message }).await;
+    }
+    agents.ask(app, &id, message).await
+}
+#[tauri::command]
 async fn list_review_agents(
     app: tauri::AppHandle,
     agents: tauri::State<'_, agents::Agents>,
@@ -287,6 +299,7 @@ pub fn run() {
             submit_review,
             enqueue_self,
             start_review_agent,
+            ask_review_agent,
             list_review_agents,
             start_quiz,
             answer_quiz,

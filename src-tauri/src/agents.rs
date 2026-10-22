@@ -1,4 +1,4 @@
-//! GUI-owned Ferropi mounts. Pi owns native history; the review model has no tools.
+//! Resident-owned Ferropi mounts. Pi owns review and conversation history; no model tools.
 use crate::reviews::ReviewRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -30,8 +30,24 @@ pub struct AgentState {
     pub files: Vec<String>,
     pub omitted: usize,
     pub session_path: PathBuf,
+    #[serde(default)]
+    pub conversation: Vec<AgentMessage>,
+    #[serde(default)]
+    pub chatting: bool,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentMessage {
+    pub id: String,
+    pub role: String,
+    pub text: String,
+    pub failed: bool,
+}
+struct Question {
+    message: String,
+    accepted: tokio::sync::oneshot::Sender<Result<(), String>>,
 }
 struct Worker {
+    input: tokio::sync::mpsc::Sender<Question>,
     task: tauri::async_runtime::JoinHandle<()>,
     state: Arc<Mutex<AgentState>>,
 }
@@ -98,7 +114,11 @@ fn update(app: &AppHandle, state: &Arc<Mutex<AgentState>>, change: impl FnOnce(&
     };
     let _ = app.emit("review-agent", snapshot);
 }
+const FOLLOW_UP: &str = "Follow-up question about this review. Answer the question in your JSON summary; only include findings for newly discovered material bugs.\n\n";
 fn assistant_text(message: &Value) -> Option<String> {
+    if let Some(text) = message["content"].as_str() {
+        return Some(text.to_owned());
+    }
     let blocks = message["content"].as_array()?;
     let text = blocks
         .iter()
@@ -115,6 +135,71 @@ fn completed_report(message: &Value) -> Option<String> {
         let text = assistant_text(message)?;
         let report: Value = serde_json::from_str(&text).ok()?;
         (report["summary"].is_string() && report["findings"].is_array()).then_some(text)
+    }
+}
+fn native_message(message: &Value, ordinal: usize) -> Option<AgentMessage> {
+    let role = message["role"].as_str()?;
+    if !matches!(role, "user" | "assistant") {
+        return None;
+    }
+    let text = assistant_text(message).unwrap_or_default();
+    let identity = message
+        .get("timestamp")
+        .map(Value::to_string)
+        .unwrap_or_else(|| ordinal.to_string());
+    Some(AgentMessage {
+        id: format!("{role}:{identity}"),
+        role: role.into(),
+        text: if role == "user" {
+            text.strip_prefix(FOLLOW_UP).unwrap_or(&text).to_owned()
+        } else {
+            text
+        },
+        failed: matches!(message["stopReason"].as_str(), Some("error" | "aborted")),
+    })
+}
+fn history(messages: &[Value]) -> (Option<String>, Vec<AgentMessage>) {
+    let start = messages
+        .iter()
+        .rposition(|message| {
+            message["role"] == "user"
+                && assistant_text(message)
+                    .is_some_and(|text| text.starts_with("Review this immutable change."))
+        })
+        .map_or(0, |index| index + 1);
+    let report = messages
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(index, message)| {
+            (message["role"] == "assistant")
+                .then(|| completed_report(message))
+                .flatten()
+                .map(|text| (index, text))
+        });
+    if let Some((index, report)) = report {
+        let conversation = messages
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .filter_map(|(index, message)| native_message(message, index))
+            .collect();
+        (Some(report), conversation)
+    } else {
+        (None, Vec::new())
+    }
+}
+fn upsert_message(state: &mut AgentState, message: &Value) {
+    if let Some(message) = native_message(message, state.conversation.len()) {
+        if let Some(existing) = state
+            .conversation
+            .iter_mut()
+            .find(|existing| existing.id == message.id)
+        {
+            *existing = message;
+        } else {
+            state.conversation.push(message);
+        }
     }
 }
 pub(crate) async fn send(
@@ -135,6 +220,45 @@ impl Agents {
             .values()
             .map(|worker| worker.state.lock().expect("agent state poisoned").clone())
             .collect()
+    }
+    pub async fn ask(
+        &self,
+        app: AppHandle,
+        id: &str,
+        message: String,
+    ) -> Result<AgentState, String> {
+        let message = message.trim().to_owned();
+        if message.is_empty() || message.len() > 32_000 {
+            return Err("Enter a question of at most 32 KB".into());
+        }
+        let (state, input) = {
+            let workers = self.workers.lock().expect("agent workers poisoned");
+            let worker = workers
+                .get(id)
+                .ok_or("Start the Pi reviewer before asking a question")?;
+            (worker.state.clone(), worker.input.clone())
+        };
+        let (accepted, reply) = tokio::sync::oneshot::channel();
+        let initial = {
+            let mut state = state.lock().expect("agent state poisoned");
+            if state.phase != Phase::Complete || state.chatting {
+                return Err("Wait for Pi to finish before sending another question".into());
+            }
+            input
+                .try_send(Question { message, accepted })
+                .map_err(|_| "Pi session is unavailable; retry the reviewer to reconnect")?;
+            state.chatting = true;
+            state.phase = Phase::Reviewing;
+            state.error = None;
+            state.sequence += 1;
+            state.clone()
+        };
+        let _ = app.emit("review-agent", initial);
+        reply
+            .await
+            .map_err(|_| "Pi disconnected before accepting your question")??;
+        let snapshot = state.lock().expect("agent state poisoned").clone();
+        Ok(snapshot)
     }
     pub fn stop_all(&self) {
         self.workers.lock().expect("agent workers poisoned").clear();
@@ -177,19 +301,23 @@ impl Agents {
             omitted: request.files.len() - files.len(),
             files,
             session_path: root.join(&request.id).join("agent.jsonl"),
+            conversation: Vec::new(),
+            chatting: false,
         };
         let state = Arc::new(Mutex::new(initial.clone()));
         let task_state = state.clone();
         let id = request.id.clone();
+        let (input, receiver) = tokio::sync::mpsc::channel(1);
         let task = tauri::async_runtime::spawn(async move {
-            if let Err(error) = run(&app, &task_state, &request, &message).await {
+            if let Err(error) = run(&app, &task_state, &request, &message, receiver).await {
                 update(&app, &task_state, |state| {
                     state.phase = Phase::Error;
+                    state.chatting = false;
                     state.error = Some(error);
                 });
             }
         });
-        workers.insert(id, Worker { task, state });
+        workers.insert(id, Worker { task, state, input });
         Ok(initial)
     }
 }
@@ -216,6 +344,7 @@ async fn run(
     state: &Arc<Mutex<AgentState>>,
     request: &ReviewRequest,
     prompt: &str,
+    mut input: tokio::sync::mpsc::Receiver<Question>,
 ) -> Result<(), String> {
     let executable = ferropi_executable(
         std::env::var_os("FERROPI_BIN"),
@@ -244,13 +373,44 @@ async fn run(
     let mut lines = BufReader::new(child.stdout.take().ok_or("Missing Ferropi stdout")?).lines();
     let mut hydrated = false;
     let mut failure: Option<String> = None;
-    while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
+    let mut pending: Option<(String, tokio::sync::oneshot::Sender<Result<(), String>>)> = None;
+    loop {
+        let line = tokio::select! {
+            line = lines.next_line() => line.map_err(|e| e.to_string())?,
+            question = input.recv() => {
+                let question = question.ok_or("Review client closed")?;
+                let id = format!("question-{}", uuid::Uuid::new_v4());
+                send(&mut stdin, json!({"id":id,"type":"prompt","message":format!("{FOLLOW_UP}{}", question.message)})).await?;
+                pending = Some((id, question.accepted));
+                continue;
+            }
+        };
+        let Some(line) = line else {
+            break;
+        };
         let wire: Value = serde_json::from_str(&line).map_err(|e| e.to_string())?;
         let record = if wire["type"] == "event" {
             &wire["record"]
         } else {
             &wire
         };
+        if record["type"] == "response"
+            && pending
+                .as_ref()
+                .is_some_and(|(id, _)| record["id"].as_str() == Some(id.as_str()))
+        {
+            let (_, accepted) = pending.take().unwrap();
+            let result = if record["success"] == false {
+                Err(record["error"]
+                    .as_str()
+                    .unwrap_or("Pi rejected the question")
+                    .to_owned())
+            } else {
+                Ok(())
+            };
+            let _ = accepted.send(result);
+        }
+        let chatting = state.lock().expect("agent state poisoned").chatting;
         match record["type"].as_str() {
             Some("mounted") => {
                 send(&mut stdin, json!({"id":"hydrate","type":"get_messages"})).await?
@@ -263,22 +423,17 @@ async fn run(
             }
             Some("response") if record["id"] == "hydrate" && !hydrated => {
                 hydrated = true;
-                let previous = record["data"]["messages"].as_array().and_then(|messages| {
-                    messages
-                        .iter()
-                        .rev()
-                        .find(|message| message["role"] == "assistant")
-                });
-                if let Some(message) = previous {
-                    // Failed/interrupted attempts are history, not a permanent barrier.
-                    // Retry in this same native session; only reuse a successful report.
-                    if let Some(text) = completed_report(message) {
-                        update(app, state, |state| {
-                            state.text = text;
-                            state.phase = Phase::Complete;
-                        });
-                        continue;
-                    }
+                let (previous, conversation) = record["data"]["messages"]
+                    .as_array()
+                    .map(|messages| history(messages))
+                    .unwrap_or_default();
+                if let Some(text) = previous {
+                    update(app, state, |state| {
+                        state.text = text;
+                        state.conversation = conversation;
+                        state.phase = Phase::Complete;
+                    });
+                    continue;
                 }
                 update(app, state, |state| state.phase = Phase::Reviewing);
                 send(
@@ -292,12 +447,42 @@ async fn run(
                 update(app, state, |state| {
                     state.phase = Phase::Reviewing;
                     state.error = None;
-                    state.text.clear();
+                    if !state.chatting {
+                        state.text.clear();
+                    }
                 });
+            }
+            Some("message_start") | Some("message_end") if chatting => {
+                update(app, state, |state| {
+                    upsert_message(state, &record["message"])
+                });
+                if matches!(
+                    record["message"]["stopReason"].as_str(),
+                    Some("error" | "aborted")
+                ) {
+                    failure = Some(
+                        record["message"]["errorMessage"]
+                            .as_str()
+                            .unwrap_or("Pi answer failed or was aborted")
+                            .into(),
+                    );
+                }
             }
             Some("message_update") if record["assistantMessageEvent"]["type"] == "text_delta" => {
                 if let Some(delta) = record["assistantMessageEvent"]["delta"].as_str() {
-                    update(app, state, |state| state.text.push_str(delta));
+                    update(app, state, |state| {
+                        if state.chatting {
+                            if let Some(message) = state
+                                .conversation
+                                .last_mut()
+                                .filter(|message| message.role == "assistant")
+                            {
+                                message.text.push_str(delta);
+                            }
+                        } else {
+                            state.text.push_str(delta);
+                        }
+                    });
                 }
             }
             Some("message_end") if record["message"]["role"] == "assistant" => {
@@ -319,6 +504,7 @@ async fn run(
                 }
             }
             Some("agent_settled") => update(app, state, |state| {
+                state.chatting = false;
                 if record["aborted"] == true {
                     state.phase = Phase::Error;
                     state.error = Some("Review was aborted".into());
@@ -386,6 +572,29 @@ mod tests {
             .as_deref(),
             Some("{\"summary\":\"report\",\"findings\":[]}")
         );
+    }
+    #[test]
+    fn native_conversation_keeps_original_findings_and_restores_followups() {
+        let report = "{\"summary\":\"Original findings\",\"findings\":[]}";
+        let messages = vec![
+            json!({"role":"user","timestamp":1,"content":"Review this immutable change. data"}),
+            json!({"role":"assistant","timestamp":2,"stopReason":"stop","content":[{"type":"text","text":report}]}),
+            json!({"role":"user","timestamp":3,"content":format!("{FOLLOW_UP}Why isolate checkout?")}),
+            json!({"role":"assistant","timestamp":4,"stopReason":"stop","content":[{"type":"text","text":"{\"summary\":\"Follow-up answer\",\"findings\":[]}"}]}),
+        ];
+        let (original, conversation) = history(&messages);
+        assert_eq!(original.as_deref(), Some(report));
+        assert_eq!(conversation.len(), 2);
+        assert_eq!(conversation[0].text, "Why isolate checkout?");
+        assert_eq!(conversation[0].id, "user:3");
+        assert_eq!(conversation[1].id, "assistant:4");
+        assert!(!conversation[1].failed);
+        let interrupted = native_message(
+            &json!({"role":"assistant","timestamp":5,"stopReason":"aborted","content":[]}),
+            2,
+        )
+        .unwrap();
+        assert!(interrupted.failed);
     }
     #[test]
     fn review_has_no_tools_and_only_receives_scoped_snapshot_content() {

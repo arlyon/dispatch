@@ -10,6 +10,8 @@ export type AgentState = {
 	files: string[];
 	omitted: number;
 	sessionPath: string;
+	conversation?: { id:string; role:"user"|"assistant"; text:string; failed:boolean }[];
+	chatting?: boolean;
 };
 export type Finding = {
 	path: string;
@@ -80,7 +82,7 @@ export default function AgentReport(props: {
 			<div class="agent-heading comment-byline">
 				<span class="comment-avatar">π</span><strong>Pi</strong><span class="agent-purpose">Review recommendation</span>
 				<span class={`agent-phase ${props.state.phase}`}>
-					{props.state.phase === "complete" ? "Ready" : props.state.phase === "error" ? "Needs attention" : "Reviewing"}
+					{props.state.chatting ? "Responding" : props.state.phase === "complete" ? "Ready" : props.state.phase === "error" ? "Needs attention" : "Reviewing"}
 				</span>
 			</div>
 			<p class="muted agent-safety">

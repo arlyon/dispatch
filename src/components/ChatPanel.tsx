@@ -1,5 +1,6 @@
 import { For, Show } from "solid-js";
 import AgentReport, { type AgentState } from "../AgentReport";
+import AgentConversation from "./AgentConversation";
 import type { QuizRunSummary, Comment, CommentAnchor, PendingComment, ReviewDraft, ReviewRequest, ReviewContext, ThreadStatus } from "../types";
 import Icon from "./Icon";
 import LinkedContext from "./LinkedContext";
@@ -11,6 +12,7 @@ import type { CommentThread } from "./SourceThread";
 import "./review-context.css";
 export default function ChatPanel(props:{
   quizSummaries:QuizRunSummary[];onQuiz:()=>void;quizDisabled:boolean;quizStarting:boolean;attachments:string[];uploading:boolean;groups:CommentThread[];onReply:(anchor:CommentAnchor)=>void;onState:(anchor:CommentAnchor,state:ThreadStatus)=>void;stateCount:number;context:ReviewContext|null;onStartReview:()=>void;request?:ReviewRequest;agent?:AgentState;complete:boolean;submitting:boolean;error:string;comments:Comment[];pending:PendingComment[];summary:string;dismissed:ReadonlySet<number>;
+  agentQuestion:string;agentSending:boolean;onAgentQuestion:(value:string)=>void;onAskAgent:()=>void;
   unsent?:ReviewDraft;onSummary:(value:string)=>void;onJump:(anchor:CommentAnchor)=>void;onResume:(pending:PendingComment)=>void;onRemove:(index:number)=>void;onClose:()=>void;
 }) {
   return <section class="right floating-panel"><header class="right-head"><strong>Chat</strong><span class="chat-context">This change</span><span class="spacer"/><Show when={props.request}><button class="quiz-start" disabled={props.quizDisabled} onClick={props.onQuiz}>{props.quizStarting?"Preparing…":"Quiz me"}</button></Show><button class="iconbtn" aria-label="Close Chat" onClick={props.onClose}><Icon name="close"/></button></header><div class="conversation">
@@ -19,6 +21,7 @@ export default function ChatPanel(props:{
       <Show when={props.context?.guide}><section class="review-guide-context"><div class="comment-byline"><span class="comment-avatar">A</span><strong>Agent</strong><span class="agent-purpose">Opening context · not your feedback</span></div><AnimatedDisclosure title="Review guide" open><Markdown text={props.context?.guide||""}/></AnimatedDisclosure></section></Show>
       <For each={props.groups.map(group=>group.id)}>{id=><ConversationComment group={props.groups.find(group=>group.id===id)!} readonly={props.complete||props.submitting} onJump={props.onJump} onReply={props.onReply} onState={props.onState} onRemove={props.onRemove}/>}</For>
       <Show when={props.agent} fallback={<Show when={props.complete}><p class="archived-chat-note">Archived feedback · read-only</p></Show>}>{state=><AgentReport state={state()} request={props.request!} dismissed={props.dismissed} onJump={(path,line=1,side="new")=>props.onJump({path,line,side})}/>}</Show><Show when={!props.complete&&props.agent?.phase==="error"}><button class="reviewer-start" onClick={props.onStartReview}>Retry Pi review · same session</button></Show>
+      <Show when={props.agent}>{state=><AgentConversation state={state()} question={props.agentQuestion} sending={props.agentSending} disabled={props.quizDisabled} onQuestion={props.onAgentQuestion} onSend={props.onAskAgent}/>}</Show>
       <Show when={props.attachments.length}><div class="chat-attachments"><For each={props.attachments}>{path=><Markdown text={`[Pasted image](<${path}>)`}/>}</For></div></Show>
       <For each={props.pending}>{pending=><button class="pending-comment" onClick={()=>props.onResume(pending)}><span>Unfinished comment</span><strong>{pending.path.split("/").slice(-1)[0]}:{pending.line}</strong><span class="finding-preview">{pending.body||"Empty draft"}</span></button>}</For>
       <Show when={props.complete&&props.unsent&&(props.unsent.summary||props.unsent.comments.length||Object.keys(props.unsent.pending).length||Object.keys(props.unsent.threadStates).length)}><details class="unsent-notes"><summary>Unsubmitted notes preserved in this window</summary><p>These are not part of the archived feedback.</p><pre>{props.unsent?.summary}</pre><For each={[...(props.unsent?.comments||[]),...Object.values(props.unsent?.pending||{})]}>{comment=><p>{comment.path}:{comment.line}<br/>{comment.body}</p>}</For></details></Show>
