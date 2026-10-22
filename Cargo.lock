@@ -857,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "dispatch"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "directories",
  "fs2",
@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "ferropi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1103,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "ferropi-pi-rpc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "serde",
