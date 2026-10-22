@@ -103,6 +103,22 @@ fn render(width: u32, count: usize, attention: bool) -> Image<'static> {
 mod tests {
     use super::*;
     #[test]
+    fn icon_open_paths_do_not_acquire_default_black_fills() {
+        let icon = tauri::include_image!("icons/icon.png");
+        let pixel = |x: u32, y: u32| {
+            let offset =
+                ((y * icon.height() / 512 * icon.width() + x * icon.width() / 512) * 4) as usize;
+            &icon.rgba()[offset..offset + 4]
+        };
+        assert_eq!(pixel(0, 0)[3], 0, "keep the outer corners transparent");
+        for (x, y) in [(421, 188), (179, 387)] {
+            assert!(
+                pixel(x, y)[..3].iter().all(|channel| *channel > 230),
+                "beak/leg stroke interiors must stay unfilled"
+            );
+        }
+    }
+    #[test]
     fn count_reveals_then_settles_without_an_idle_timer() {
         let now = Instant::now();
         let mut indicator = TrayIndicator::default();

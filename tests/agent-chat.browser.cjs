@@ -6,7 +6,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
  const server=spawn('pnpm',['exec','vite','--host','127.0.0.1','--port','14720','--strictPort'],{cwd:path.resolve(__dirname,'..'),stdio:'ignore'});let browser;
  try{
   for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:14720')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));}
-  browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage();page.setDefaultTimeout(12000);const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({viewport:{width:1800,height:1050}});page.setDefaultTimeout(12000);const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.addInitScript(request=>{
    let next=1;const callbacks=new Map(),listeners=new Map(),other={...request,id:'other-review',title:'Other review'},results={};
    window.__questions=[];window.__submits=[];window.__checkpoints=[];
@@ -30,6 +30,22 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
    }};
   },request);
   await page.goto('http://127.0.0.1:14720');const input=page.getByRole('textbox',{name:'Message Pi',exact:true}),summary=page.getByRole('textbox',{name:'Final summary',exact:true});await input.waitFor();
+  assert.equal(await page.locator('select,input[type="checkbox"]').count(),0,'no native dropdowns or checkboxes');
+  assert.equal(await page.locator('.scope-pill,.user-avatar').count(),0,'no fake scope/avatar toolbar clutter');
+  assert.ok(!await page.locator('.statusbar').innerText().then(text=>/Immutable local snapshots|No GitHub publishing/.test(text)));
+  await input.fill('Keep the draft while changing view');
+  const view=page.getByRole('button',{name:'View options',exact:true});await view.click();
+  await page.getByRole('group',{name:'Peek stack',exact:true}).getByRole('button',{name:'3 cards',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'3 cards',exact:true}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('group',{name:'Comment placement',exact:true}).getByRole('button',{name:'Inline',exact:true}).click();
+  assert.equal(await page.getByRole('button',{name:'Inline',exact:true}).getAttribute('aria-pressed'),'true');
+  await page.getByRole('group',{name:'Comment placement',exact:true}).getByRole('button',{name:'Auto',exact:true}).click();
+  await page.keyboard.press('Escape');assert.ok(await view.evaluate(el=>el===document.activeElement));
+  assert.equal(await page.getByRole('region',{name:'View options'}).isVisible(),false);
+  assert.equal(await input.inputValue(),'Keep the draft while changing view');
+  const checked=page.getByRole('checkbox').first();await checked.check();assert.equal(await checked.getAttribute('aria-checked'),'true');await checked.press('Space');assert.equal(await checked.getAttribute('aria-checked'),'false');
+  assert.ok((await page.locator('.topbar .primary-action').boundingBox()).height<=30);
+  await page.screenshot({path:'/tmp/dispatch-controls-fixed.png'});await view.click();await page.screenshot({path:'/tmp/dispatch-controls-view-menu.png'});await page.keyboard.press('Escape');
   await summary.fill('Human feedback only');await input.fill('Why keep the checkout isolated?');await page.getByRole('button',{name:'Send',exact:true}).click();await page.waitForFunction(()=>window.__questions.length===1);
   assert.equal(await input.inputValue(),'Why keep the checkout isolated?','retain input until actual acceptance');
   await page.evaluate(()=>{window.__emit({phase:'reviewing',chatting:true,conversation:[{id:'user:1',role:'user',text:'Why keep the checkout isolated?',failed:false},{id:'assistant:2',role:'assistant',text:'{"summary":"It preserves',failed:false}]});window.__accept();});
@@ -41,6 +57,6 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
   await page.waitForTimeout(350);assert.ok(await page.evaluate(id=>window.__checkpoints.some(c=>c.checkpoint.data.drafts[id]?.agentQuestion==='Keep this unsent question'),request.id));
   await page.getByRole('button',{name:'Submit feedback',exact:true}).click();await page.waitForFunction(()=>window.__submits.length===1);assert.equal(await page.evaluate(()=>window.__submits[0].feedback.summary),'Human feedback only');assert.ok(!JSON.stringify(await page.evaluate(()=>window.__submits[0])).includes('unsent question'));
   await page.locator('.archive-section>summary').click();await page.locator('.archive-list .pr-summary').filter({hasText:request.title}).click();await input.waitFor();assert.equal(await input.inputValue(),'Keep this unsent question','publishing feedback must not erase an unsent agent message');
-  assert.deepEqual(errors,[]);console.log('PASS native-agent UI boundary: explicit send/ack, stable streamed answer, preserved findings, isolated review drafts/checkpoint, failed-send retention and no chat in human feedback');
+  assert.deepEqual(errors,[]);console.log('PASS custom toolbar/checkboxes: keyboard, view state, unchanged drafts, no native widgets/footer clutter; native-agent boundary: explicit ack, stable streaming, findings, checkpoint, failed-send retention, no chat in feedback');
  }finally{await browser?.close();server.kill();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

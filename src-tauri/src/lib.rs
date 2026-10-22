@@ -12,6 +12,7 @@ mod linked_context;
 mod quiz;
 mod quiz_stream;
 pub mod reviews;
+mod tools;
 #[cfg(any(target_os = "macos", test))]
 mod tray_indicator;
 mod updates;
@@ -270,6 +271,7 @@ async fn end_quiz(
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    tools::prepare();
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(updates::Updates::default())

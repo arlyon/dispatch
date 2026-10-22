@@ -1,5 +1,6 @@
 // Own-source snapshot; native IPC is mocked. No live queue writes or model calls.
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const viewOption=require('./view-option.cjs');
 const {spawn}=require('node:child_process'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const cwd=path.resolve(__dirname,'..'),port=process.env.DISPATCH_TEST_PORT||'14693',origin=`http://127.0.0.1:${port}`;
 const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
@@ -59,7 +60,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
   },request);
   await page.goto(origin);await page.getByRole('button',{name:'Quiz me',exact:true}).waitFor();
   assert.ok(await page.locator('.original-chat .reviewer-offer').evaluate(el=>el===el.parentElement.lastElementChild),'reviewer offer is the last conversation item');
-  await page.emulateMedia({reducedMotion:'reduce'});await page.getByLabel('Comment placement',{exact:true}).selectOption('inline');
+  await page.emulateMedia({reducedMotion:'reduce'});await viewOption(page,'Comment placement','Inline');
   await page.locator('.original-chat .conversation').getByRole('button',{name:'Go to src/App.tsx:2',exact:true}).click();await page.waitForTimeout(500);
   const file=page.locator('.diff-layout[data-file-path="src/App.tsx"]');const line=file.locator('.cm-lineNumbers .cm-gutterElement').filter({hasText:/^2$/}).last();
   await line.click();const draft=page.getByRole('textbox',{name:'Line comment',exact:true});await draft.fill('Saved human note');await page.getByRole('button',{name:'Save reply',exact:true}).click();

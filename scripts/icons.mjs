@@ -17,7 +17,7 @@ const shapes = source.slice(source.indexOf('<g id="legs"'), source.lastIndexOf("
   .replace('id="eye-white" fill="#FFFFFF"', 'id="eye-white" fill="#000000"');
 const defs = `<defs><mask id="bird" maskUnits="userSpaceOnUse" x="150" y="160" width="990" height="990">${shapes}</mask></defs>`;
 const bird = '<rect x="150" y="160" width="990" height="990" fill="black" mask="url(#bird)"/>';
-const svg = content => `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="150 160 990 990">${defs}${content}</svg>`;
+const svg = content => `<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="150 160 990 990" fill="none">${defs}${content}</svg>`;
 const render = content => execFileSync("rsvg-convert", ["--width", "144", "--height", "144"], { input: svg(content) });
 const template = execFileSync("magick", ["png:-", "-resize", "48x48", "PNG32:-"], { input: render(bird) });
 writeFileSync(icon("tray-template.png"), template);
@@ -35,7 +35,7 @@ writeFileSync(icon("tray-digits-attention.png"), execFileSync("magick", ["png:-"
 
 // The app/Dock icon retains the original coloured artwork on a macOS-style
 // rounded tile. Only the menu-bar bird is a monochrome template.
-const appSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><rect x="64" y="64" width="896" height="896" rx="200" fill="#FCFCFC"/><svg x="110" y="100" width="804" height="804" viewBox="150 160 990 990">${source.slice(source.indexOf('<g id="legs"'), source.lastIndexOf("</svg>"))}</svg></svg>`;
+const appSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none"><rect x="64" y="64" width="896" height="896" rx="200" fill="#FCFCFC"/><svg x="110" y="100" width="804" height="804" viewBox="150 160 990 990">${source.slice(source.indexOf('<g id="legs"'), source.lastIndexOf("</svg>"))}</svg></svg>`;
 const temporary = mkdtempSync(join(tmpdir(), "dispatch-icons-"));
 try {
   const input = join(temporary, "bird.png");

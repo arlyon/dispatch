@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const assert = require("node:assert/strict");
+const viewOption = require('./view-option.cjs');
 const cwd = path.resolve(__dirname, "..");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "dispatch-comments-"));
 fs.chmodSync(temporary, 0o700);
@@ -118,7 +119,7 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
     // existing comment must unfold it before composing at the same anchor.
     await page.locator('.conversation').getByRole("button", { name: "Go to src/App.tsx:12", exact: true }).click();
     await waitForJump();
-    await page.getByLabel('Comment placement',{exact:true}).selectOption('inline');await page.waitForTimeout(250);
+    await viewOption(page,'Comment placement','Inline');await page.waitForTimeout(250);
     assert.equal(await page.locator('.floating-gutter-thread').count(),0,'wide inline override removes gutter cards');
     const inlineThread=file.locator('.inline-reveal[data-inline-thread=\'["src/App.tsx","new",12]\']');
     const inlineHint=file.getByRole('button',{name:'Toggle comment thread on new line 12',exact:true});
@@ -133,7 +134,7 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
     await page.keyboard.type('Temporary inline draft.');await page.waitForTimeout(1500);assert.equal(await inlineInput.inputValue(),'Temporary inline draft.');
     const inlineSave=await page.getByRole('button',{name:'Save reply',exact:true}).boundingBox(),inlineViewport=await page.locator('.workspace').boundingBox();assert.ok(inlineSave.x+inlineSave.width<=inlineViewport.x+inlineViewport.width,'inline actions stay in visible code width, not the longest source line width');
     await page.screenshot({path:path.join(os.tmpdir(),'dispatch-inline-wide.png')});
-    await page.getByLabel('Comment placement',{exact:true}).selectOption('auto');await page.waitForTimeout(250);assert.equal(await inlineInput.inputValue(),'Temporary inline draft.','override/layout change preserves draft');
+    await viewOption(page,'Comment placement','Auto');await page.waitForTimeout(250);assert.equal(await inlineInput.inputValue(),'Temporary inline draft.','override/layout change preserves draft');
     await page.getByRole('button',{name:'Cancel',exact:true}).click();await page.getByRole('button',{name:'Discard',exact:true}).click();
     await page.locator('.conversation').getByRole('button',{name:'Go to src/App.tsx:12',exact:true}).click();await waitForJump();
     const peek=page.getByRole('button',{name:'Next comment: src/Diff.tsx:2',exact:true});await peek.waitFor({state:'visible'});
@@ -158,17 +159,17 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
     await previousPeek.click({position:{x:24,y:12}});await waitForJump();
     await page.locator('.conversation').getByRole('button',{name:'Go to src/App.tsx:12',exact:true}).click();await waitForJump();
     const scrollBody=page.locator('.floating-gutter-thread .comment-thread[data-thread-line="12"] .thread-body').first();
-    assert.equal(await page.getByLabel('Peek stack',{exact:true}).inputValue(),'1','one actual peek per edge by default');
+    assert.equal(await page.locator('[role="group"][aria-label="Peek stack"] button[aria-pressed="true"]').textContent(),'1','one actual peek per edge by default');
     assert.equal(await page.locator('.edge-comment-peek').count(),0,'no fake preview card DOM');
     assert.equal(await page.locator('.floating-gutter-thread[data-peeking="next"]').count(),1);
-    await page.getByLabel('Peek stack',{exact:true}).selectOption('2');await page.waitForTimeout(250);
+    await viewOption(page,'Peek stack','2 cards');await page.waitForTimeout(250);
     const realStack=page.locator('.floating-gutter-thread[data-peeking="next"]');assert.equal(await realStack.count(),2,'stack control reveals more real cards');
     const stackRects=await realStack.evaluateAll(nodes=>nodes.map(node=>({top:node.getBoundingClientRect().top,z:Number(node.style.zIndex)})));
     assert.ok(Math.abs(stackRects[1].top-stackRects[0].top-30)<2&&stackRects[1].z>stackRects[0].z,'later real card overlaps below the preceding header');
     const viewportBottom=await page.locator('.workspace').evaluate(el=>el.getBoundingClientRect().bottom);assert.ok(Math.abs(stackRects[1].top+30-viewportBottom)<1,'last peek is flush with the viewport edge, no padding gap');
     assert.equal(await page.locator('.floating-gutter-thread').count(),5,'stack setting creates no duplicate cards');
     await page.screenshot({path:path.join(os.tmpdir(),'dispatch-real-card-stack.png')});
-    await page.getByLabel('Peek stack',{exact:true}).selectOption('1');await page.waitForTimeout(250);
+    await viewOption(page,'Peek stack','1 card');await page.waitForTimeout(250);
     const nativeMotion=await page.evaluate(()=>{const workspace=document.querySelector('.workspace'),card=[...document.querySelectorAll('.floating-gutter-thread')].find(n=>n.dataset.thread==='["src/App.tsx","new",12]'),row=[...document.querySelectorAll('.diff-layout[data-file-path="src/App.tsx"] .cm-lineNumbers .cm-gutterElement')].filter(n=>n.textContent==='12').at(-1);const a=card.getBoundingClientRect().top,r=row.getBoundingClientRect().top;workspace.scrollTop+=16;return {card:card.getBoundingClientRect().top-a,row:row.getBoundingClientRect().top-r,position:getComputedStyle(card).position,transition:getComputedStyle(card).transitionDuration};});
     assert.equal(nativeMotion.card,nativeMotion.row,'card follows source synchronously before any JS scroll callback');assert.equal(nativeMotion.card,-16);assert.equal(nativeMotion.position,'absolute');assert.equal(nativeMotion.transition,'0s');
     await page.waitForTimeout(150);
