@@ -143,7 +143,7 @@ export default function InboxPanel(props:{
     const selected=()=>Boolean(review()&&review()!.id===props.selectedId);
     const preparing=()=>!p.history&&Boolean(props.captures[p.id]);
     const content=()=>review()&&(selected()?props.request:props.cachedRequest(review()!.id));
-    const opened=()=>expanded()[p.id]??(selected()||Boolean(content()));
+    const opened=()=>selected()&&(expanded()[p.id]??true);
     const head=()=>props.github?.heads?.find(head=>head.url===p.id);
     const changed=()=>!p.history&&Boolean(review()?.source.prUrl&&head()?.head&&head()!.head!.toLowerCase()!==review()!.source.head.toLowerCase());
     const activate=()=>{if(preparing())return;if(review()?.source.prUrl&&review()?.checkoutReady===false&&!p.history){props.onSelectPR(p.id);}else if(review()){setExpanded(all=>({...all,[p.id]:true}));props.onSelect(review()!.id);}else props.onSelectPR(p.id);};
