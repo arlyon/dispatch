@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/arlyon/dispatch/compare/v0.1.2...v0.1.3) - 2026-10-26
+
+### Added
+
+- add native in-app review conversations
+
+### Fixed
+
+- share GitHub and local review counts across Waybar and macOS ([#12](https://github.com/arlyon/dispatch/pull/12))
+- resolve desktop tools and refine review controls
+
 ## [0.1.2](https://github.com/arlyon/dispatch/compare/v0.1.1...v0.1.2) - 2026-10-26
 
 ### Added
