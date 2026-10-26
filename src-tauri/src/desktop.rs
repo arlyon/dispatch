@@ -211,7 +211,6 @@ fn queue_ids(root: &Path) -> Result<HashSet<String>> {
     }
     Ok(ids)
 }
-#[cfg(any(target_os = "macos", test))]
 fn outstanding_count(root: &Path, ids: &HashSet<String>) -> usize {
     ids.iter()
         .filter(|id| !root.join(id).join("result.json").exists())
@@ -982,6 +981,30 @@ fn run_resident(
     });
     Ok(())
 }
+fn status_args(args: &[String]) -> Result<bool> {
+    if !args.iter().any(|arg| arg == "--status") {
+        return Ok(false);
+    }
+    if args == ["--status", "--format", "waybar"] {
+        return Ok(true);
+    }
+    Err("Usage: dispatch --status --format waybar".into())
+}
+
+fn waybar_status(root: &Path) -> Result<serde_json::Value> {
+    let ids = match queue_ids(root) {
+        Ok(ids) => ids,
+        Err(_) if !root.try_exists().map_err(|error| error.to_string())? => HashSet::new(),
+        Err(error) => return Err(error),
+    };
+    let count = outstanding_count(root, &ids);
+    Ok(serde_json::json!({
+        "text": count.to_string(),
+        "class": if count > 0 { "attention" } else { "" },
+        "tooltip": format!("Dispatch — {count} outstanding reviews"),
+    }))
+}
+
 fn parse_args(args: &[String]) -> Result<Activation> {
     let mut activation = Activation::default();
     let mut args = args.iter();
@@ -1003,6 +1026,10 @@ pub(crate) fn run(
     context: tauri::Context<tauri::Wry>,
 ) -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
+    if status_args(&args)? {
+        println!("{}", waybar_status(&reviews::root()?)?);
+        return Ok(());
+    }
     if args == ["--gui"] {
         if std::env::var("DISPATCH_GUI_CHILD").as_deref() != Ok("1") {
             return Err("--gui is an internal launch mode".into());
@@ -1132,6 +1159,52 @@ mod tests {
             outstanding_count(root.path(), &queue_ids(root.path()).unwrap()),
             59
         );
+    }
+
+    #[test]
+    fn waybar_status_counts_pending_reviews_without_creating_state() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("reviews");
+        let empty = waybar_status(&root).unwrap();
+        assert_eq!(empty["text"], "0");
+        assert_eq!(empty["class"], "");
+        assert!(!root.exists());
+        fs::create_dir(&root).unwrap();
+        assert_eq!(waybar_status(&root).unwrap(), empty);
+        fs::create_dir(root.join("not-a-review")).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let review = root.join(id);
+        fs::create_dir(&review).unwrap();
+        fs::write(review.join("request.json"), b"{}").unwrap();
+        let pending = waybar_status(&root).unwrap();
+        assert_eq!(pending["text"], "1");
+        assert_eq!(pending["class"], "attention");
+        assert_eq!(pending["tooltip"], "Dispatch — 1 outstanding reviews");
+        fs::write(review.join("result.json"), b"{}").unwrap();
+        assert_eq!(waybar_status(&root).unwrap(), empty);
+        let file = parent.path().join("not-a-directory");
+        fs::write(&file, b"").unwrap();
+        assert!(waybar_status(&file).is_err());
+    }
+
+    #[test]
+    fn status_flags_reject_activation_and_unknown_formats() {
+        let args = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(status_args(&args(&["--status", "--format", "waybar"])).unwrap());
+        assert!(!status_args(&args(&["--bg"])).unwrap());
+        for values in [
+            vec!["--status"],
+            vec!["--status", "--format", "json"],
+            vec!["--status", "--format", "waybar", "--bg"],
+            vec!["--status", "--status", "--format", "waybar"],
+        ] {
+            assert!(status_args(&args(&values)).is_err());
+        }
     }
 
     #[test]

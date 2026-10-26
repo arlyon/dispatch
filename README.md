@@ -42,6 +42,8 @@ Dispatch keeps one resident tray per private review queue and at most one separa
 
 New background reviews can produce a native notification. An unseen arrival adds a large pink-red badge to the bird's bottom-right; showing Dispatch acknowledges that badge. On macOS the monochrome bird slides aside to reveal the total unfinished review count already in the inbox, regardless of local/remote source. The count remains after acknowledgement and disappears when all reviews complete. The slide is a bounded transition on count changes, not a repeating animation. Remote PR discovery remains separate work. Tray clicks use the Open/Hide/Quit menu; the exact tray-host presentation varies.
 
+`dispatch --status --format waybar` prints one JSON object with `text`, `class` (`attention` when nonzero) and `tooltip`. It reads the same unfinished local queue count as the tray, without starting the resident/window, querying GitHub or writing files. GitHub search matches that have not been captured into the queue are not counted. A missing queue reports zero; read errors exit unsuccessfully. `DISPATCH_REVIEW_DIR` selects an alternate queue. A Waybar custom module can use this command as `exec`, `return-type: "json"`, `interval: 10`, and `on-click: "dispatch"`.
+
 Explicit **Quit Dispatch** requires submitting or explicitly discarding unsubmitted feedback. Do not force-quit the resident process to reclaim the GUI: that loses its memory-only checkpoints and stops its agent clients.
 
 ### CI and releases
