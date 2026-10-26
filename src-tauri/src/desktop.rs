@@ -211,11 +211,6 @@ fn queue_ids(root: &Path) -> Result<HashSet<String>> {
     }
     Ok(ids)
 }
-fn outstanding_count(root: &Path, ids: &HashSet<String>) -> usize {
-    ids.iter()
-        .filter(|id| !root.join(id).join("result.json").exists())
-        .count()
-}
 impl Controller {
     #[cfg(target_os = "macos")]
     fn update_tray(&mut self) -> Result<()> {
@@ -720,14 +715,17 @@ fn run_controller(mut controller: Controller, receiver: mpsc::Receiver<Event>) {
         if last_scan.elapsed() >= Duration::from_secs(1) {
             match queue_ids(&controller.root) {
                 Ok(ids) => {
-                    #[cfg(target_os = "macos")]
-                    {
-                        let count = outstanding_count(&controller.root, &ids);
-                        controller.indicator.set_count(count, Instant::now());
-                        if let Some(tray) = controller.app.tray_by_id("dispatch") {
-                            let tooltip = format!("Dispatch — {count} outstanding reviews");
-                            let _ = tray.set_tooltip(Some(tooltip));
+                    match review_counts(&controller.root) {
+                        Ok(counts) => {
+                            #[cfg(target_os = "macos")]
+                            controller
+                                .indicator
+                                .set_count(counts.total(), Instant::now());
+                            if let Some(tray) = controller.app.tray_by_id("dispatch") {
+                                let _ = tray.set_tooltip(Some(counts.tooltip()));
+                            }
                         }
+                        Err(error) => eprintln!("Dispatch review count: {error}"),
                     }
                     for id in ids
                         .difference(&controller.known)
@@ -913,6 +911,11 @@ fn run_resident(
                     let _ = menu_sender.send(event);
                 })
                 .build(app)?;
+            if let Ok(counts) = review_counts(&root)
+                && let Some(tray) = app.tray_by_id("dispatch")
+            {
+                tray.set_tooltip(Some(counts.tooltip()))?;
+            }
             let agent_sender = sender.clone();
             app.listen("review-agent", move |event| {
                 if let Ok(state) = serde_json::from_str(event.payload()) {
@@ -944,7 +947,9 @@ fn run_resident(
             #[cfg(target_os = "macos")]
             let indicator = {
                 let mut indicator = crate::tray_indicator::TrayIndicator::default();
-                indicator.set_count(outstanding_count(&root, &known), Instant::now());
+                if let Ok(counts) = review_counts(&root) {
+                    indicator.set_count(counts.total(), Instant::now());
+                }
                 indicator
             };
             let controller = Controller {
@@ -1013,18 +1018,130 @@ fn status_args(args: &[String]) -> Result<bool> {
     Err("Usage: dispatch --status --format waybar".into())
 }
 
-fn waybar_status(root: &Path) -> Result<serde_json::Value> {
+struct ReviewCounts {
+    prs: usize,
+    local: usize,
+    remote_known: bool,
+    warning: Option<&'static str>,
+}
+impl ReviewCounts {
+    fn total(&self) -> usize {
+        self.prs + self.local
+    }
+    fn pr_text(&self) -> String {
+        if !self.remote_known {
+            if self.prs == 0 {
+                "?".into()
+            } else {
+                format!("{}+?", self.prs)
+            }
+        } else if self.warning.is_some() {
+            format!("{}?", self.prs)
+        } else {
+            self.prs.to_string()
+        }
+    }
+    fn tooltip(&self) -> String {
+        let total = if !self.remote_known {
+            format!("{}+?", self.total())
+        } else if self.warning.is_some() {
+            format!("{}?", self.total())
+        } else {
+            self.total().to_string()
+        };
+        let mut tooltip = format!(
+            "Dispatch — {total} outstanding reviews ({} PRs, {} local requests)",
+            self.pr_text(),
+            self.local
+        );
+        if let Some(warning) = self.warning {
+            tooltip.push_str(&format!("\n{warning}"));
+        }
+        tooltip
+    }
+    fn waybar(&self) -> Value {
+        let mut classes = Vec::new();
+        if self.total() > 0 {
+            classes.push("attention");
+        }
+        if self.warning.is_some() {
+            classes.push(if self.remote_known {
+                "stale"
+            } else {
+                "unavailable"
+            });
+        }
+        serde_json::json!({
+            "text": format!("{} PR · {} local", self.pr_text(), self.local),
+            "class": classes,
+            "tooltip": self.tooltip(),
+        })
+    }
+}
+
+fn review_counts(root: &Path) -> Result<ReviewCounts> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+    review_counts_at(root, now)
+}
+
+fn waybar_status(root: &Path) -> Result<Value> {
+    Ok(review_counts(root)?.waybar())
+}
+
+#[cfg(test)]
+fn waybar_status_at(root: &Path, now: u64) -> Result<Value> {
+    Ok(review_counts_at(root, now)?.waybar())
+}
+
+fn review_counts_at(root: &Path, now: u64) -> Result<ReviewCounts> {
     let ids = match queue_ids(root) {
         Ok(ids) => ids,
         Err(_) if !root.try_exists().map_err(|error| error.to_string())? => HashSet::new(),
         Err(error) => return Err(error),
     };
-    let count = outstanding_count(root, &ids);
-    Ok(serde_json::json!({
-        "text": count.to_string(),
-        "class": if count > 0 { "attention" } else { "" },
-        "tooltip": format!("Dispatch — {count} outstanding reviews"),
-    }))
+    let cache = crate::github::StatusCache::read(root).ok();
+    let remote = cache.as_ref().filter(|cache| cache.last_success.is_some());
+    let mut outstanding: HashSet<String> = remote
+        .into_iter()
+        .flat_map(|cache| cache.urls.iter().map(|url| url.to_ascii_lowercase()))
+        .collect();
+    let mut local = 0;
+    for id in ids {
+        if root.join(&id).join("result.json").exists() {
+            continue;
+        }
+        let request = reviews::read_request(root, &id)?;
+        if let Some(url) = request.source.pr_url {
+            outstanding.insert(url.to_ascii_lowercase());
+        } else {
+            local += 1;
+        }
+    }
+    let warning = match &cache {
+        None => Some("GitHub cache unavailable; open Dispatch to refresh"),
+        Some(cache) if cache.last_success.is_none() => {
+            Some("GitHub has not completed a successful poll")
+        }
+        Some(cache) if cache.failed => Some("GitHub polling failed; showing cached results"),
+        Some(cache) if cache.partial => Some("GitHub results are incomplete"),
+        Some(cache)
+            if cache.last_success.is_some_and(|last| {
+                last > now || now - last > crate::github::STATUS_MAX_AGE.as_secs()
+            }) =>
+        {
+            Some("GitHub cache is stale; open Dispatch to refresh")
+        }
+        _ => None,
+    };
+    Ok(ReviewCounts {
+        prs: outstanding.len(),
+        local,
+        remote_known: remote.is_some(),
+        warning,
+    })
 }
 
 fn parse_args(args: &[String]) -> Result<Activation> {
@@ -1160,53 +1277,173 @@ mod tests {
         );
     }
 
-    #[test]
-    fn count_includes_the_whole_queue_and_only_completion_clears_it() {
-        let root = tempfile::tempdir().unwrap();
-        let mut ids = HashSet::new();
-        for _ in 0..60 {
-            let id = uuid::Uuid::new_v4().to_string();
-            let directory = root.path().join(&id);
-            fs::create_dir(&directory).unwrap();
-            fs::write(directory.join("request.json"), b"{}").unwrap();
-            ids.insert(id);
-        }
-        assert_eq!(
-            outstanding_count(root.path(), &queue_ids(root.path()).unwrap()),
-            60
-        );
-        let completed = ids.iter().next().unwrap();
-        fs::write(root.path().join(completed).join("result.json"), b"{}").unwrap();
-        assert_eq!(
-            outstanding_count(root.path(), &queue_ids(root.path()).unwrap()),
-            59
-        );
+    fn status_review(root: &Path, pr_url: Option<&str>) -> PathBuf {
+        let id = uuid::Uuid::new_v4().to_string();
+        let directory = root.join(&id);
+        fs::create_dir_all(&directory).unwrap();
+        let request = reviews::ReviewRequest {
+            version: 1,
+            id,
+            title: "Status fixture".into(),
+            source: reviews::Source {
+                repo: root.into(),
+                base: "a".repeat(40),
+                head: "b".repeat(40),
+                base_ref: "main".into(),
+                head_ref: "topic".into(),
+                pr_url: pr_url.map(String::from),
+            },
+            files: vec![],
+        };
+        fs::write(
+            directory.join("request.json"),
+            serde_json::to_vec(&request).unwrap(),
+        )
+        .unwrap();
+        directory
+    }
+
+    fn status_cache(root: &Path, urls: &[&str]) -> serde_json::Value {
+        let cache = serde_json::json!({"version": 1, "urls": urls, "lastSuccess": 100, "partial": false, "failed": false});
+        fs::write(root.join("github-status.json"), cache.to_string()).unwrap();
+        cache
     }
 
     #[test]
-    fn waybar_status_counts_pending_reviews_without_creating_state() {
+    fn waybar_status_missing_remote_cache_is_unknown_and_read_only() {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("reviews");
-        let empty = waybar_status(&root).unwrap();
-        assert_eq!(empty["text"], "0");
-        assert_eq!(empty["class"], "");
+        let empty = waybar_status_at(&root, 100).unwrap();
+        assert_eq!(empty["text"], "? PR · 0 local");
+        assert_eq!(empty["class"], serde_json::json!(["unavailable"]));
         assert!(!root.exists());
-        fs::create_dir(&root).unwrap();
-        assert_eq!(waybar_status(&root).unwrap(), empty);
-        fs::create_dir(root.join("not-a-review")).unwrap();
-        let id = uuid::Uuid::new_v4().to_string();
-        let review = root.join(id);
-        fs::create_dir(&review).unwrap();
-        fs::write(review.join("request.json"), b"{}").unwrap();
-        let pending = waybar_status(&root).unwrap();
-        assert_eq!(pending["text"], "1");
-        assert_eq!(pending["class"], "attention");
-        assert_eq!(pending["tooltip"], "Dispatch — 1 outstanding reviews");
-        fs::write(review.join("result.json"), b"{}").unwrap();
-        assert_eq!(waybar_status(&root).unwrap(), empty);
+        let local = status_review(&root, None);
+        let pending = waybar_status_at(&root, 100).unwrap();
+        assert_eq!(pending["text"], "? PR · 1 local");
+        assert_eq!(
+            pending["class"],
+            serde_json::json!(["attention", "unavailable"])
+        );
+        fs::write(local.join("result.json"), b"{}").unwrap();
+        assert_eq!(waybar_status_at(&root, 100).unwrap(), empty);
+        assert!(!root.join("desktop.lock").exists());
+        assert!(!root.join("desktop.sock").exists());
         let file = parent.path().join("not-a-directory");
         fs::write(&file, b"").unwrap();
-        assert!(waybar_status(&file).is_err());
+        assert!(waybar_status_at(&file, 100).is_err());
+    }
+
+    #[test]
+    fn shared_counts_split_prs_and_standalone_requests_without_duplicates() {
+        let root = tempfile::tempdir().unwrap();
+        let remote = "https://github.com/example/repo/pull/1";
+        status_cache(root.path(), &[remote]);
+        let initial = review_counts_at(root.path(), 100).unwrap();
+        assert_eq!((initial.prs, initial.local, initial.total()), (1, 0, 1));
+        assert_eq!(initial.waybar()["text"], "1 PR · 0 local");
+        let captured = status_review(root.path(), Some(remote));
+        let duplicate = status_review(root.path(), Some("https://github.com/Example/Repo/pull/1"));
+        assert_eq!(review_counts_at(root.path(), 100).unwrap().total(), 1);
+        let local_pr = status_review(root.path(), Some("https://github.com/example/repo/pull/2"));
+        let local = status_review(root.path(), None);
+        let counts = review_counts_at(root.path(), 100).unwrap();
+        assert_eq!((counts.prs, counts.local, counts.total()), (2, 1, 3));
+        assert_eq!(counts.waybar()["text"], "2 PR · 1 local");
+        assert_eq!(counts.waybar()["class"], serde_json::json!(["attention"]));
+        assert_eq!(
+            counts.tooltip(),
+            "Dispatch — 3 outstanding reviews (2 PRs, 1 local requests)"
+        );
+        assert_eq!(counts.waybar()["tooltip"], counts.tooltip());
+        for review in [captured, local_pr, local] {
+            fs::write(review.join("result.json"), b"{}").unwrap();
+        }
+        let completed = review_counts_at(root.path(), 100).unwrap();
+        assert_eq!(
+            (completed.prs, completed.local, completed.total()),
+            (1, 0, 1)
+        );
+        status_cache(root.path(), &[]);
+        assert_eq!(review_counts_at(root.path(), 100).unwrap().prs, 1);
+        fs::write(duplicate.join("result.json"), b"{}").unwrap();
+        let zero = review_counts_at(root.path(), 100).unwrap();
+        assert_eq!(zero.total(), 0);
+        assert_eq!(zero.waybar()["text"], "0 PR · 0 local");
+        assert_eq!(zero.waybar()["class"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn shared_counts_keep_unknown_remote_separate_from_known_local_work() {
+        let root = tempfile::tempdir().unwrap();
+        status_review(root.path(), Some("https://github.com/example/repo/pull/1"));
+        status_review(root.path(), None);
+        let counts = review_counts_at(root.path(), 100).unwrap();
+        assert_eq!((counts.prs, counts.local, counts.total()), (1, 1, 2));
+        assert_eq!(counts.waybar()["text"], "1+? PR · 1 local");
+        assert!(counts.tooltip().contains("2+? outstanding reviews"));
+        assert!(counts.tooltip().contains("GitHub cache unavailable"));
+    }
+
+    #[test]
+    fn waybar_status_counts_local_queue_beyond_the_ui_limit() {
+        let root = tempfile::tempdir().unwrap();
+        status_cache(root.path(), &[]);
+        for _ in 0..60 {
+            status_review(root.path(), None);
+        }
+        let counts = review_counts_at(root.path(), 100).unwrap();
+        assert_eq!((counts.prs, counts.local, counts.total()), (0, 60, 60));
+        assert_eq!(counts.waybar()["text"], "0 PR · 60 local");
+        let completed = queue_ids(root.path()).unwrap().into_iter().next().unwrap();
+        fs::write(root.path().join(completed).join("result.json"), b"{}").unwrap();
+        assert_eq!(review_counts_at(root.path(), 100).unwrap().total(), 59);
+    }
+
+    #[test]
+    fn waybar_status_marks_stale_partial_failed_and_invalid_remote_data() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = status_cache(root.path(), &["https://github.com/example/repo/pull/1"]);
+        for now in [99, 461] {
+            let status = waybar_status_at(root.path(), now).unwrap();
+            assert_eq!(status["text"], "1? PR · 0 local");
+            assert_eq!(status["class"], serde_json::json!(["attention", "stale"]));
+        }
+        assert_eq!(
+            waybar_status_at(root.path(), 460).unwrap()["text"],
+            "1 PR · 0 local"
+        );
+        for field in ["partial", "failed"] {
+            let mut degraded = cache.clone();
+            degraded[field] = true.into();
+            fs::write(root.path().join("github-status.json"), degraded.to_string()).unwrap();
+            assert_eq!(
+                waybar_status_at(root.path(), 100).unwrap()["text"],
+                "1? PR · 0 local"
+            );
+        }
+        for invalid in [
+            "{}".to_string(),
+            "not-json".to_string(),
+            {
+                let mut invalid = cache.clone();
+                invalid["version"] = 2.into();
+                invalid.to_string()
+            },
+            {
+                let mut initial = cache;
+                initial["lastSuccess"] = serde_json::Value::Null;
+                initial.to_string()
+            },
+        ] {
+            fs::write(root.path().join("github-status.json"), invalid).unwrap();
+            assert_eq!(
+                waybar_status_at(root.path(), 100).unwrap()["text"],
+                "? PR · 0 local"
+            );
+        }
+        let broken = status_review(root.path(), None);
+        fs::write(broken.join("request.json"), b"{}").unwrap();
+        assert!(waybar_status_at(root.path(), 100).is_err());
     }
 
     #[test]

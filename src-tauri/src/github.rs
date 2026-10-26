@@ -12,6 +12,54 @@ pub const QUERY: &str =
     "is:pr is:open -author:arlyon -review:approved -draft:true org:carpe-lab org:theadspend";
 const REPO_QUERY: &str = "is:pr is:open -author:arlyon -review:approved -draft:true repo:InformaTSS/commercial-ai-sales-project";
 const INTERVAL: Duration = Duration::from_secs(120);
+pub(crate) const STATUS_MAX_AGE: Duration = Duration::from_secs(360);
+const STATUS_CACHE: &str = "github-status.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct StatusCache {
+    pub version: u8,
+    pub urls: HashSet<String>,
+    pub last_success: Option<u64>,
+    pub partial: bool,
+    pub failed: bool,
+}
+impl StatusCache {
+    fn from_source(state: &SourceState) -> Self {
+        Self {
+            version: 1,
+            urls: state
+                .items
+                .iter()
+                .map(|item| item.url.to_ascii_lowercase())
+                .collect(),
+            last_success: state.last_success,
+            partial: state.partial,
+            failed: state.error.is_some(),
+        }
+    }
+    fn publish(&self, root: &std::path::Path) -> Result<(), String> {
+        crate::reviews::ensure_root(root)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
+        serde_json::to_writer(temporary.as_file_mut(), self).map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        temporary
+            .persist(root.join(STATUS_CACHE))
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    pub fn read(root: &std::path::Path) -> Result<Self, String> {
+        use std::io::Read;
+        let file = std::fs::File::open(root.join(STATUS_CACHE)).map_err(|e| e.to_string())?;
+        let cache: Self =
+            serde_json::from_reader(std::io::BufReader::new(file.take(4 * 1024 * 1024)))
+                .map_err(|e| e.to_string())?;
+        if cache.version != 1 {
+            return Err("Unsupported GitHub status cache".into());
+        }
+        Ok(cache)
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -161,12 +209,16 @@ impl GitHub {
         })
     }
     pub fn start(&self) {
-        self.start_with("gh".into(), INTERVAL);
-        if let Ok(root) = crate::reviews::root() {
+        let root = crate::reviews::root();
+        if let Err(error) = &root {
+            eprintln!("Dispatch GitHub status cache: {error}");
+        }
+        self.start_with("gh".into(), INTERVAL, root.as_ref().ok().cloned());
+        if let Ok(root) = root {
             self.start_heads("gh".into(), root, INTERVAL);
         }
     }
-    fn start_with(&self, binary: String, interval: Duration) {
+    fn start_with(&self, binary: String, interval: Duration, root: Option<std::path::PathBuf>) {
         let state = self.state.clone();
         *self.task.lock().unwrap() = Some(tauri::async_runtime::spawn(async move {
             let mut ticks = tokio::time::interval(interval);
@@ -175,7 +227,18 @@ impl GitHub {
                 ticks.tick().await;
                 state.lock().unwrap().polling = true;
                 let result = discover(&binary).await;
-                state.lock().unwrap().accept(result);
+                let cache = {
+                    let mut state = state.lock().unwrap();
+                    state.accept(result);
+                    StatusCache::from_source(&state)
+                };
+                if let Some(root) = root.clone() {
+                    let result =
+                        tauri::async_runtime::spawn_blocking(move || cache.publish(&root)).await;
+                    if let Err(error) = result.unwrap_or_else(|error| Err(error.to_string())) {
+                        eprintln!("Dispatch GitHub status cache: {error}");
+                    }
+                }
             }
         }));
     }
@@ -866,6 +929,65 @@ mod tests {
             assert!(state.error.is_some());
         }
     }
+    #[test]
+    fn status_cache_is_private_atomic_and_tracks_failed_and_empty_polls() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::github_test_support::private_root();
+        let mut state = SourceState {
+            items: vec![PullRequest {
+                url: "https://github.com/Example/Repo/pull/1".into(),
+                repo: "Example/Repo".into(),
+                number: 1,
+                title: "Private title".into(),
+                author: "review-author".into(),
+                updated_at: "now".into(),
+                created_at: String::new(),
+            }],
+            last_success: Some(100),
+            ..SourceState::default()
+        };
+        StatusCache::from_source(&state)
+            .publish(root.path())
+            .unwrap();
+        let path = root.path().join(STATUS_CACHE);
+        let saved = StatusCache::read(root.path()).unwrap();
+        assert!(
+            saved
+                .urls
+                .contains("https://github.com/example/repo/pull/1")
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("Private title")
+        );
+        state.accept(Err("Poll failed".into()));
+        StatusCache::from_source(&state)
+            .publish(root.path())
+            .unwrap();
+        let failed = StatusCache::read(root.path()).unwrap();
+        assert!(failed.failed);
+        assert_eq!(failed.urls, saved.urls);
+        assert_eq!(failed.last_success, Some(100));
+        state.accept(Ok(SearchResult {
+            items: vec![],
+            total: 0,
+            partial: false,
+        }));
+        StatusCache::from_source(&state)
+            .publish(root.path())
+            .unwrap();
+        let cleared = StatusCache::read(root.path()).unwrap();
+        assert!(cleared.urls.is_empty());
+        assert!(!cleared.failed);
+        assert!(cleared.last_success.is_some());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
     #[tokio::test]
     async fn poll_is_immediate_and_window_shutdown_cancels_owned_cli_only() {
         assert_eq!(INTERVAL, Duration::from_secs(120));
@@ -876,7 +998,12 @@ mod tests {
             json!({"delayMs":10000,"stdout":"{}"}),
         ]);
         let github = GitHub::default();
-        github.start_with(fake.binary.clone(), Duration::from_millis(150));
+        let cache_root = crate::github_test_support::private_root();
+        github.start_with(
+            fake.binary.clone(),
+            Duration::from_millis(150),
+            Some(cache_root.path().into()),
+        );
         let mut shutdown = github.cancellation();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -905,6 +1032,7 @@ mod tests {
                 .success()
         );
         assert_eq!(github.snapshot().items.len(), 1);
+        assert_eq!(StatusCache::read(cache_root.path()).unwrap().urls.len(), 1);
         assert_eq!(fake.calls().len(), 4);
     }
     #[tokio::test]
