@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/arlyon/dispatch/compare/v0.1.1...v0.1.2) - 2026-10-26
+
+### Added
+
+- expose local review count for Waybar ([#6](https://github.com/arlyon/dispatch/pull/6))
+- add signed Tauri updates for RPM and AppImage
+- pin Linear and Confluence context to immutable reviews
+- add native review quiz in the right panel
+
+### Other
+
+- Merge current main into linked review context
+- Merge pull request #4 from arlyon/feat/card-keyboard-navigation
+- Add focus-only Inbox card keyboard navigation
+- integrate native tray with quiz review workflow
+
 ## [0.1.1](https://github.com/arlyon/dispatch/compare/v0.1.0...v0.1.1) - 2026-10-22
 
 ### Added
