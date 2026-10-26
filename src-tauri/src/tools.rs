@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn finder_path_resolves_mise_pi_and_node_without_project_configuration() {
         let root = tempfile::tempdir().unwrap();
-        let home = root.path();
+        let home = root.path().canonicalize().unwrap();
         let bin = home.join("installed/bin");
         script(&bin.join("pi"), "exit 0");
         script(&bin.join("node"), "exit 0");
@@ -196,10 +196,16 @@ mod tests {
                 bin.display()
             ),
         );
-        let environment = discover(home, OsStr::new("/usr/bin:/bin"));
+        let environment = discover(&home, OsStr::new(""));
         assert_eq!(environment.pi, Some(bin.join("pi").canonicalize().unwrap()));
         let paths: Vec<_> = std::env::split_paths(&environment.path).collect();
         assert_eq!(find("node", &paths), Some(bin.join("node")));
+        let inherited = home.join("inherited/bin");
+        script(&inherited.join("node"), "exit 0");
+        let environment = discover(&home, inherited.as_os_str());
+        let paths: Vec<_> = std::env::split_paths(&environment.path).collect();
+        assert_eq!(find("node", &paths), Some(inherited.join("node")));
+        assert_eq!(environment.pi, Some(bin.join("pi")));
     }
     #[test]
     #[ignore = "explicit local runtime probe; starts native Pi without a model prompt"]
