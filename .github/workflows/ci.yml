@@ -61,7 +61,12 @@ jobs:
           # The Azure mirror stalled for 24 minutes on the release recovery.
           sudo python3 - <<'PY'
           from pathlib import Path
-          for path in [Path('/etc/apt/sources.list'), *Path('/etc/apt/sources.list.d').glob('*.sources')]:
+          for path in [
+              Path('/etc/apt/sources.list'),
+              Path('/etc/apt/apt-mirrors.txt'),
+              *Path('/etc/apt/sources.list.d').glob('*.sources'),
+              *Path('/etc/apt/sources.list.d').glob('*.list'),
+          ]:
               if path.is_file():
                   text = path.read_text()
                   path.write_text(text.replace('http://azure.archive.ubuntu.com/ubuntu', 'https://archive.ubuntu.com/ubuntu'))
