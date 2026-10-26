@@ -49,6 +49,38 @@ fn canonical_pr_url(input: &str) -> Result<String, String> {
     ))
 }
 
+fn pr_browser_command(url: &str) -> Result<Command, String> {
+    let url = canonical_pr_url(url)?;
+    let mut command = Command::new(if cfg!(target_os = "macos") {
+        "/usr/bin/open"
+    } else {
+        "xdg-open"
+    });
+    command.arg(url).stdin(Stdio::null());
+    Ok(command)
+}
+
+#[tauri::command]
+async fn open_pr_in_browser(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let review = reviews::read_request(&reviews::root()?, &id)?;
+        let url = review
+            .source
+            .pr_url
+            .as_deref()
+            .ok_or("This review has no GitHub PR")?;
+        let status = pr_browser_command(url)?
+            .status()
+            .map_err(|error| format!("Could not open browser: {error}"))?;
+        if !status.success() {
+            return Err(format!("Browser opener exited with {status}"));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn describe_pr(url: String) -> Result<Value, String> {
     let url = canonical_pr_url(&url)?;
@@ -287,6 +319,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             describe_pr,
+            open_pr_in_browser,
             github_source,
             open_github_pr,
             save_attachment,
@@ -325,6 +358,31 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn browser_opener_only_accepts_github_pr_urls_as_a_single_argument() {
+        let command =
+            pr_browser_command("https://github.com/acme/repo/pull/42?diff=split").unwrap();
+        assert_eq!(
+            command.get_program(),
+            if cfg!(target_os = "macos") {
+                "/usr/bin/open"
+            } else {
+                "xdg-open"
+            }
+        );
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["https://github.com/acme/repo/pull/42"]
+        );
+        for invalid in [
+            "file:///etc/passwd",
+            "https://example.com",
+            "--help",
+            "https://github.com/acme/repo/pull/42;touch /tmp/no",
+        ] {
+            assert!(pr_browser_command(invalid).is_err(), "{invalid}");
+        }
+    }
     #[test]
     fn normalizes_pr_links_without_expanding_hosts_or_paths() {
         assert_eq!(

@@ -200,6 +200,10 @@ export default function App(){
     } catch(error){if(!disposed&&sequence===openSequence)setError(`Cannot capture PR: ${String(error)}`);}
     finally {if(opening===url)opening=undefined;if(!disposed){animateInbox(()=>setCapture(undefined));setGithubOpening(undefined);}}
   }
+  async function openPRInBrowser(){
+    const review=request();if(!review?.source.prUrl)return;
+    try{await invoke("open_pr_in_browser",{id:review.id});}catch(error){setError(`Cannot open PR: ${String(error)}`);}
+  }
   async function selfReview(){
     if(busy())return;setOperation("snapshot");setError("");
     try{const review=await invoke<ReviewRequest>("enqueue_self");await refresh();await open(review.id);}catch(error){setError(String(error));}finally{setOperation(undefined);}
@@ -414,7 +418,7 @@ export default function App(){
     <Show when={notice()}><p class="inbox-notice" role="status">{notice()}</p></Show>
     <Show when={error()}><div class="error-banner" role="alert"><span>{error()}</span><Show when={hasFeedback()}><button disabled={busy()} onClick={()=>{setDrafts({});setAnchor(undefined);setError("");}}>Discard all unsubmitted feedback</button></Show><button class="iconbtn" aria-label="Dismiss message" onClick={()=>setError("")}><Icon name="close"/></button></div></Show>
     <Show when={request()} fallback={<section class="empty-state"><Icon name="branch"/><h1>Your review inbox</h1><p>Open a change from Inbox, or snapshot Dispatch against main.</p><button class="primary-action" disabled={busy()} onClick={()=>void selfReview()}>Review Dispatch</button><p class="muted">Completed reviews stay readable in Archive.</p></section>}>{review=><>
-      <ChangeContext hasGuide={Boolean(context()?.guide)} onGuide={()=>{setChatVisible(true);requestAnimationFrame(()=>document.querySelector(".review-guide-context")?.scrollIntoView({block:"start"}));}} request={review()} complete={complete()} mode={mode()} onMode={setMode} hasGutter={useGutter()}/>
+      <ChangeContext onOpenPR={openPRInBrowser} hasGuide={Boolean(context()?.guide)} onGuide={()=>{setChatVisible(true);requestAnimationFrame(()=>document.querySelector(".review-guide-context")?.scrollIntoView({block:"start"}));}} request={review()} complete={complete()} mode={mode()} onMode={setMode} hasGutter={useGutter()}/>
       <GutterLayout groups={reviewGroups()} handles={editorHandles} revision={handleRevision()} workspace={()=>workspace} wide={useGutter()} stackDepth={stackDepth()}/>
       <For each={review().files}>{file=><FileDiffPanel beside={useGutter()} file={file} mode={mode()} readonly={complete()||operation()==="submit"||uploads()>0} readReady={Boolean(identities()[file.path])} reviewed={readPaths().has(file.path)} expanded={fileExpanded(file.path)} focus={jump()?.path===file.path?jump():undefined} groups={reviewGroups().filter(group=>group.path===file.path)} composer={!complete()&&anchor()?.path===file.path?currentDraft().pending[anchorKey(anchor()!)]:undefined} onBody={updateBody} onSave={saveComment} onDiscard={discardPending} onClose={()=>setAnchor(undefined)} onComment={compose} onJump={jumpTo} onState={setThreadState} onRemove={removeComment} onEdit={editComment} onHandle={handle=>{if(handle)editorHandles.set(file.path,handle);else editorHandles.delete(file.path);setHandleRevision(value=>value+1);}} onRead={read=>markRead(file.path,read)} onExpand={()=>setExpanded(all=>({...all,[expandKey(file.path)]:!fileExpanded(file.path)}))} onElement={element=>elements.set(file.path,element)}/>}</For>
     </>}</Show>
