@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/arlyon/dispatch/compare/v0.1.3...v0.1.4) - 2026-10-26
+
+### Added
+
+- archive skipped reviews and snooze or ignore PRs locally
+- prepare independent pull requests concurrently
+- open a review's GitHub PR in the browser
+
+### Fixed
+
+- collapse unselected sidebar review cards
+
+### Other
+
+- Merge remote-tracking branch 'origin/feat/review-dismissal' into fix/sidebar-card-collapse
+- Merge remote-tracking branch 'origin/feat/concurrent-pr-pulls' into feat/review-dismissal
+- Merge remote-tracking branch 'origin/feat/open-pr-button' into feat/concurrent-pr-pulls
+- Merge remote-tracking branch 'origin/main' into feat/open-pr-button
+
 ## [0.1.3](https://github.com/arlyon/dispatch/compare/v0.1.2...v0.1.3) - 2026-10-26
 
 ### Added
