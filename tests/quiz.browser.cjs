@@ -22,6 +22,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:callback=>{const id=next++;callbacks.set(id,callback);return id;},invoke:async(command,args)=>{
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}
     if(command==='plugin:event|unlisten')return;
+    if(command==='pr_dispositions')return [];
     if(command==='github_source')return {query:'Mock source',items:[],heads:[],total:0,partial:false,polling:false,lastSuccess:1,error:null};
     if(command==='desktop_bootstrap')return {checkpoint:JSON.parse(sessionStorage.getItem('desktop-checkpoint')||'null'),review:null};
     if(command==='desktop_hide'){window.__hideCalls.push(args);return;}

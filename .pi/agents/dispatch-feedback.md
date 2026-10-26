@@ -9,4 +9,4 @@ runner:
 async: true
 timeoutMs: 86400000
 ---
-The external command consumes the task's single DISPATCH_WAIT JSON line, invokes dispatch-review wait, and returns the completed feedback JSON on stdout. It creates no Pi session and never enqueues or submits a review. An optional absolute directory selects a private test/custom queue. The harness must notify the caller when this command exits. No language model is involved.
+The external command consumes the task's single DISPATCH_WAIT JSON line, invokes dispatch-review wait, and returns the result JSON on stdout. `status: "complete"` includes feedback; `status: "skipped"` means the human archived without submitting feedback and must not be interpreted as approval. Both outcomes unblock the caller. It creates no Pi session and never enqueues or submits a review. An optional absolute directory selects a private test/custom queue. The harness must notify the caller when this command exits. No language model is involved.

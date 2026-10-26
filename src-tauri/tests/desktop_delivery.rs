@@ -48,6 +48,38 @@ fn queue() -> tempfile::TempDir {
     fs::set_permissions(queue.path(), fs::Permissions::from_mode(0o700)).unwrap();
     queue
 }
+#[test]
+fn waiting_cli_receives_an_explicit_skip_without_feedback() {
+    let repo = repository();
+    let queue = queue();
+    let request =
+        dispatch_lib::reviews::enqueue(queue.path(), repo.path(), "HEAD~1", "HEAD").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dispatch-review"))
+        .args(["wait", &request.id])
+        .env("DISPATCH_REVIEW_DIR", queue.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(child.try_wait().unwrap().is_none());
+    dispatch_lib::reviews::skip(queue.path(), &request.id).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() > deadline {
+            child.kill().unwrap();
+            panic!("Skipped result did not unblock CLI");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "skipped");
+    assert_eq!(result["requestId"], request.id);
+    assert!(result.get("feedback").is_none());
+}
+
 fn desktop(root: &Path) -> (mpsc::Receiver<Value>, std::thread::JoinHandle<()>) {
     let listener = UnixListener::bind(root.join("desktop.sock")).unwrap();
     let (send, receive) = mpsc::channel();

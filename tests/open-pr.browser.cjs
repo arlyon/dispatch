@@ -17,6 +17,7 @@ const request={version:1,id:randomUUID(),title:'Own-source GitHub review',source
     if(command==='plugin:event|listen')return next++;if(command==='plugin:event|unlisten')return;
     if(command==='desktop_bootstrap')return {checkpoint:null,review:request.id};
     if(['desktop_ready','desktop_checkpoint','desktop_checkpoint_failed','desktop_hide','desktop_quit'].includes(command))return;
+    if(command==='pr_dispositions')return [];
     if(command==='github_source')return {query:'fixture',items:[],heads:[],total:0,partial:false,polling:false,lastSuccess:1,error:null};
     if(command==='list_reviews')return [request,local].map(r=>({id:r.id,title:r.title,source:r.source,fileCount:r.files.length,complete:false}));
     if(command==='open_review')return args.id===request.id?request:local;

@@ -195,10 +195,19 @@ impl GitHub {
                     state.lock().unwrap().heads.clear();
                     continue;
                 };
-                let urls: std::collections::BTreeSet<_> = requests
+                let mut urls: std::collections::BTreeSet<_> = requests
                     .iter()
                     .filter_map(|request| request.source.pr_url.clone())
                     .collect();
+                // Revision-scoped ignores must observe new heads even before capture.
+                if let Ok(dispositions) = crate::dispositions::list(&root) {
+                    urls.extend(
+                        dispositions
+                            .into_iter()
+                            .filter(|rule| rule.head.is_some())
+                            .map(|rule| rule.url),
+                    );
+                }
                 {
                     let mut state = state.lock().unwrap();
                     state.heads.retain(|head| urls.contains(&head.url));
@@ -217,7 +226,7 @@ impl GitHub {
                     }
                 }
                 let urls: Vec<_> = urls.into_iter().collect();
-                // Only materialized requests, bounded by the existing 50-request listing.
+                // Materialized reviews and explicit revision-ignore rules only.
                 // Four concurrent, timed GETs; dropping this owner aborts their children.
                 for batch in urls.chunks(4) {
                     let mut tasks = tokio::task::JoinSet::new();
@@ -419,7 +428,7 @@ async fn observe_head(state: &Arc<Mutex<SourceState>>, binary: &str, url: &str) 
     let head = read_head(binary, url).await;
     state.lock().unwrap().accept_head(order, head);
 }
-async fn read_head(binary: &str, input: &str) -> HeadState {
+pub(crate) async fn read_head(binary: &str, input: &str) -> HeadState {
     let result = async {
         let url = crate::canonical_pr_url(input)?;
         let path = url

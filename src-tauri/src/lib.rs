@@ -3,6 +3,7 @@ mod attachments;
 pub mod desktop;
 mod desktop_ipc;
 mod desktop_policy;
+mod dispositions;
 mod git_checkout;
 mod github;
 mod github_snapshot;
@@ -140,6 +141,61 @@ async fn open_github_pr(
 }
 
 #[tauri::command]
+async fn pr_dispositions() -> Result<Vec<dispositions::Disposition>, String> {
+    tauri::async_runtime::spawn_blocking(|| dispositions::list(&reviews::root()?))
+        .await
+        .map_err(|error| error.to_string())?
+}
+#[tauri::command]
+async fn restore_pr(url: String) -> Result<Vec<dispositions::Disposition>, String> {
+    tauri::async_runtime::spawn_blocking(move || dispositions::restore(&reviews::root()?, &url))
+        .await
+        .map_err(|error| error.to_string())?
+}
+#[tauri::command]
+async fn dismiss_pr(
+    url: String,
+    id: Option<String>,
+    action: dispositions::Action,
+    github: tauri::State<'_, github::GitHub>,
+) -> Result<Vec<dispositions::Disposition>, String> {
+    let url = canonical_pr_url(&url)?;
+    let root = reviews::root()?;
+    let (title, mut head) = if let Some(id) = id {
+        let review = reviews::read_request(&root, &id)?;
+        if review.source.pr_url.as_ref() != Some(&url) {
+            return Err("Review does not belong to this PR".into());
+        }
+        (review.title, Some(review.source.head))
+    } else {
+        let source = github.snapshot();
+        let pr = source
+            .items
+            .iter()
+            .find(|item| item.url == url)
+            .ok_or("PR is not in the configured GitHub search")?;
+        (pr.title.clone(), None)
+    };
+    if matches!(action, dispositions::Action::IgnoreRevision) && head.is_none() {
+        let observed = github::read_head("gh", &url).await;
+        head = Some(
+            observed
+                .head
+                .ok_or_else(|| observed.error.unwrap_or("Cannot verify PR revision".into()))?,
+        );
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        dispositions::set(&root, &url, title, action, head)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if result.is_ok() {
+        github.wake_heads();
+    }
+    result
+}
+
+#[tauri::command]
 async fn save_attachment(id: String, bytes: Vec<u8>) -> Result<attachments::SavedImage, String> {
     tauri::async_runtime::spawn_blocking(move || attachments::save(&reviews::root()?, &id, &bytes))
         .await
@@ -162,6 +218,12 @@ async fn open_review(id: String) -> Result<reviews::ReviewRequest, String> {
     tauri::async_runtime::spawn_blocking(move || reviews::read_request(&reviews::root()?, &id))
         .await
         .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn archive_review(id: String) -> Result<reviews::ReviewResult, String> {
+    tauri::async_runtime::spawn_blocking(move || reviews::skip(&reviews::root()?, &id))
+        .await
+        .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 async fn review_result(id: String) -> Result<Option<reviews::ReviewResult>, String> {
@@ -320,12 +382,16 @@ pub fn run() {
             describe_pr,
             open_pr_in_browser,
             github_source,
+            pr_dispositions,
+            dismiss_pr,
+            restore_pr,
             open_github_pr,
             save_attachment,
             read_attachment,
             list_reviews,
             open_review,
             review_result,
+            archive_review,
             review_context,
             linked_context_state,
             attach_linked_context,

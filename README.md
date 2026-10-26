@@ -97,6 +97,10 @@ Required caller flow: **enqueue → register async wait → open the review → 
 
 Requests live in the user's local data directory under `dispatch/reviews/<UUID>/request.json`; explicit submission atomically publishes a separate `result.json` with `status: "complete"`. `DISPATCH_REVIEW_DIR` can select the shared queue directory for both processes; on Unix it must be private (0700). Rust validates the v1 shape, review identity, snapshot head and comment file/line boundaries. Completion cannot overwrite an earlier result. This initial slice does not yet publish JSON Schemas or support subsequent feedback rounds on the same request.
 
+**Archive review** immediately archives the snapshot and atomically returns `{ "version": 1, "requestId": "…", "status": "skipped" }` to a waiting agent, without a `feedback` field. Waiters exit successfully for either result; callers must inspect `status` and must never interpret `skipped` as approval. Unsubmitted notes remain in the desktop checkpoint and can be inspected in Archive. Existing results cannot be overwritten.
+
+PR card actions also offer **Snooze for 1 hour / 1 day**, **Ignore this revision** (returns on a verified new head), and **Ignore this PR** (stays hidden across commits). Snoozed and Ignored lists provide Restore. These visibility rules persist locally under the private review queue, survive polling/restarts, and never mutate GitHub or submit feedback. Archiving suppresses the skipped revision from Remote until a different head is verified.
+
 Feedback is a local flush, not a GitHub review or approval. Optional `feedback.threadStates` records explicit `{path, side, line, state}` updates (`open`, `resolved`, `dismissed`); Rust validates their snapshot anchors and older results without the field remain readable. Pi quiz/terminal forks and agent findings are not included in the human-feedback payload.
 
 ## Review agents

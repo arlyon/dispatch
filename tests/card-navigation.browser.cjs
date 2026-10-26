@@ -18,6 +18,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}if(command==='plugin:event|unlisten')return;
     if(command==='desktop_bootstrap')return {checkpoint:null,review:null};
     if(['desktop_ready','desktop_checkpoint','desktop_checkpoint_failed','desktop_hide','desktop_quit'].includes(command))return;
+    if(command==='pr_dispositions')return [];
     if(command==='github_source'){if(window.__pauseSources)await new Promise(resolve=>(window.__sourceWaiters??=[]).push(resolve));return structuredClone(window.__source);}
     if(command==='list_reviews'){const entries=reviews.map((r,i)=>({id:r.id,title:r.title,source:r.source,fileCount:r.files.length,complete:r.id==="archive"||Boolean(results[r.id]),intakeAt:i+1}));if(window.__holdQueue){window.__holdQueue=false;window.__heldQueuePending=true;await new Promise(resolve=>window.__releaseHeldQueue=resolve);}return entries;}
     if(command==='open_review')return reviews.find(r=>r.id===args.id);

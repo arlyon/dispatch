@@ -17,6 +17,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
     if(command==='desktop_bootstrap')return {checkpoint:null,review:request.id};
     if(command==='desktop_checkpoint'){window.__checkpoints.push(args);return;}
     if(['desktop_ready','desktop_checkpoint_failed','desktop_hide','desktop_quit'].includes(command))return;
+    if(command==='pr_dispositions')return [];
     if(command==='github_source')return {query:'fixture',items:[],heads:[],total:0,partial:false,polling:false,lastSuccess:1,error:null};
     if(command==='list_reviews')return [request,other].map(r=>({...r,fileCount:r.files.length,complete:Boolean(results[r.id])}));
     if(command==='open_review')return args.id===request.id?request:other;
