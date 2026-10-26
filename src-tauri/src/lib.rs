@@ -3,6 +3,7 @@ mod attachments;
 pub mod desktop;
 mod desktop_ipc;
 mod desktop_policy;
+mod dispositions;
 mod git_checkout;
 mod github;
 mod github_snapshot;
@@ -47,6 +48,38 @@ fn canonical_pr_url(input: &str) -> Result<String, String> {
         "https://github.com/{}/{}/pull/{number}",
         parts[0], parts[1]
     ))
+}
+
+fn pr_browser_command(url: &str) -> Result<Command, String> {
+    let url = canonical_pr_url(url)?;
+    let mut command = Command::new(if cfg!(target_os = "macos") {
+        "/usr/bin/open"
+    } else {
+        "xdg-open"
+    });
+    command.arg(url).stdin(Stdio::null());
+    Ok(command)
+}
+
+#[tauri::command]
+async fn open_pr_in_browser(id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let review = reviews::read_request(&reviews::root()?, &id)?;
+        let url = review
+            .source
+            .pr_url
+            .as_deref()
+            .ok_or("This review has no GitHub PR")?;
+        let status = pr_browser_command(url)?
+            .status()
+            .map_err(|error| format!("Could not open browser: {error}"))?;
+        if !status.success() {
+            return Err(format!("Browser opener exited with {status}"));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -96,12 +129,66 @@ async fn open_github_pr(
     let result = tokio::select! {
         _ = shutdown.changed() => Err("Dispatch is closing".into()),
         result = async {
-            let _opening = github.opening.lock().await;
             tokio::time::timeout(std::time::Duration::from_secs(300), github.capture_checkout("gh", &root, &url, |progress| {
                 let _ = app.emit("github-capture", serde_json::json!({"url":url,"captureId":capture_id,"phase":progress.phase,"readOrder":progress.read_order,"head":progress.head,"done":progress.done,"total":progress.total}));
             })).await.map_err(|_| "PR checkout timed out".to_string())?
         } => result,
     };
+    if result.is_ok() {
+        github.wake_heads();
+    }
+    result
+}
+
+#[tauri::command]
+async fn pr_dispositions() -> Result<Vec<dispositions::Disposition>, String> {
+    tauri::async_runtime::spawn_blocking(|| dispositions::list(&reviews::root()?))
+        .await
+        .map_err(|error| error.to_string())?
+}
+#[tauri::command]
+async fn restore_pr(url: String) -> Result<Vec<dispositions::Disposition>, String> {
+    tauri::async_runtime::spawn_blocking(move || dispositions::restore(&reviews::root()?, &url))
+        .await
+        .map_err(|error| error.to_string())?
+}
+#[tauri::command]
+async fn dismiss_pr(
+    url: String,
+    id: Option<String>,
+    action: dispositions::Action,
+    github: tauri::State<'_, github::GitHub>,
+) -> Result<Vec<dispositions::Disposition>, String> {
+    let url = canonical_pr_url(&url)?;
+    let root = reviews::root()?;
+    let (title, mut head) = if let Some(id) = id {
+        let review = reviews::read_request(&root, &id)?;
+        if review.source.pr_url.as_ref() != Some(&url) {
+            return Err("Review does not belong to this PR".into());
+        }
+        (review.title, Some(review.source.head))
+    } else {
+        let source = github.snapshot();
+        let pr = source
+            .items
+            .iter()
+            .find(|item| item.url == url)
+            .ok_or("PR is not in the configured GitHub search")?;
+        (pr.title.clone(), None)
+    };
+    if matches!(action, dispositions::Action::IgnoreRevision) && head.is_none() {
+        let observed = github::read_head("gh", &url).await;
+        head = Some(
+            observed
+                .head
+                .ok_or_else(|| observed.error.unwrap_or("Cannot verify PR revision".into()))?,
+        );
+    }
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        dispositions::set(&root, &url, title, action, head)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
     if result.is_ok() {
         github.wake_heads();
     }
@@ -131,6 +218,12 @@ async fn open_review(id: String) -> Result<reviews::ReviewRequest, String> {
     tauri::async_runtime::spawn_blocking(move || reviews::read_request(&reviews::root()?, &id))
         .await
         .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn archive_review(id: String) -> Result<reviews::ReviewResult, String> {
+    tauri::async_runtime::spawn_blocking(move || reviews::skip(&reviews::root()?, &id))
+        .await
+        .map_err(|error| error.to_string())?
 }
 #[tauri::command]
 async fn review_result(id: String) -> Result<Option<reviews::ReviewResult>, String> {
@@ -287,13 +380,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             describe_pr,
+            open_pr_in_browser,
             github_source,
+            pr_dispositions,
+            dismiss_pr,
+            restore_pr,
             open_github_pr,
             save_attachment,
             read_attachment,
             list_reviews,
             open_review,
             review_result,
+            archive_review,
             review_context,
             linked_context_state,
             attach_linked_context,
@@ -325,6 +423,31 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn browser_opener_only_accepts_github_pr_urls_as_a_single_argument() {
+        let command =
+            pr_browser_command("https://github.com/acme/repo/pull/42?diff=split").unwrap();
+        assert_eq!(
+            command.get_program(),
+            if cfg!(target_os = "macos") {
+                "/usr/bin/open"
+            } else {
+                "xdg-open"
+            }
+        );
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["https://github.com/acme/repo/pull/42"]
+        );
+        for invalid in [
+            "file:///etc/passwd",
+            "https://example.com",
+            "--help",
+            "https://github.com/acme/repo/pull/42;touch /tmp/no",
+        ] {
+            assert!(pr_browser_command(invalid).is_err(), "{invalid}");
+        }
+    }
     #[test]
     fn normalizes_pr_links_without_expanding_hosts_or_paths() {
         assert_eq!(

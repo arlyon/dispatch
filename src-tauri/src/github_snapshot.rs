@@ -513,6 +513,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .feedback
+                .unwrap()
                 .summary
                 .as_deref(),
             Some("preserve me")

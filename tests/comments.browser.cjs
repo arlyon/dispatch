@@ -40,6 +40,7 @@ const requests = [request, { ...request, id: randomUUID(), title: "Other own-sou
         transformCallback: () => 1,
         invoke: async (command, args) => {
           window.__calls.push({ command, id: args?.id });
+          if (command === "pr_dispositions") return [];
           if (command === "github_source") return {query:"Mock source",items:[],total:0,partial:false,polling:false,lastSuccess:1,error:null};
           if (command === "list_reviews") return requests.map(r => ({ id: r.id, title: r.title, source: r.source, fileCount: r.files.length, complete: !!results[r.id] }));
           if (command === "open_review") return requests.find(r => r.id === args.id);

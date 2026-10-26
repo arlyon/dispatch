@@ -49,6 +49,8 @@ pub struct ReviewSummary {
     pub intake_at: u64,
     pub complete: bool,
     #[serde(default)]
+    pub skipped: bool,
+    #[serde(default)]
     pub checkout_ready: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,6 +119,7 @@ pub struct Feedback {
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     Complete,
+    Skipped,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -124,7 +127,8 @@ pub struct ReviewResult {
     pub version: u8,
     pub request_id: String,
     pub status: Status,
-    pub feedback: Feedback,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub feedback: Option<Feedback>,
 }
 
 pub fn root() -> Result<PathBuf> {
@@ -447,6 +451,10 @@ pub fn list(root: &Path) -> Result<Vec<ReviewSummary>> {
                     .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
                     .map_or(0, |duration| duration.as_millis() as u64),
                 complete: entry.path().join("result.json").exists(),
+                skipped: result(root, &entry.file_name().to_string_lossy())
+                    .ok()
+                    .flatten()
+                    .is_some_and(|result| matches!(result.status, Status::Skipped)),
             });
         }
     }
@@ -499,9 +507,26 @@ pub fn submit(root: &Path, id: &str, feedback: Feedback) -> Result<ReviewResult>
         version: 1,
         request_id: id.into(),
         status: Status::Complete,
-        feedback,
+        feedback: Some(feedback),
     };
     let _context_lock = crate::linked_context::lock(root, &request)?;
+    publish(&directory(root, id)?.join("result.json"), &result)?;
+    Ok(result)
+}
+
+pub fn skip(root: &Path, id: &str) -> Result<ReviewResult> {
+    let request = read_request(root, id)?;
+    let _context_lock = crate::linked_context::lock(root, &request)?;
+    // No draft or feedback is submitted. A waiting agent sees an explicit skip.
+    if let Some(existing) = result(root, id)? {
+        return Ok(existing);
+    }
+    let result = ReviewResult {
+        version: 1,
+        request_id: id.into(),
+        status: Status::Skipped,
+        feedback: None,
+    };
     publish(&directory(root, id)?.join("result.json"), &result)?;
     Ok(result)
 }
@@ -513,7 +538,10 @@ pub fn result(root: &Path, id: &str) -> Result<Option<ReviewResult>> {
     }
     let result: ReviewResult = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    if result.version != 1 || result.request_id != id {
+    if result.version != 1
+        || result.request_id != id
+        || matches!(result.status, Status::Complete) != result.feedback.is_some()
+    {
         return Err("Mismatched result".into());
     }
     Ok(Some(result))
@@ -740,6 +768,58 @@ mod tests {
         );
     }
     #[test]
+    fn skipped_results_unblock_waiters_without_feedback_or_overwriting() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let dir = directory(root.path(), &id).unwrap();
+        fs::create_dir(&dir).unwrap();
+        let request = ReviewRequest {
+            version: 1,
+            id: id.clone(),
+            title: "Skip me".into(),
+            source: Source {
+                repo: root.path().into(),
+                base: "a".repeat(40),
+                head: "b".repeat(40),
+                base_ref: "main".into(),
+                head_ref: "topic".into(),
+                pr_url: None,
+            },
+            files: vec![],
+        };
+        publish(&dir.join("request.json"), &request).unwrap();
+        let original = fs::read(dir.join("request.json")).unwrap();
+        let skipped = skip(root.path(), &id).unwrap();
+        let json = serde_json::to_value(&skipped).unwrap();
+        assert_eq!(json["status"], "skipped");
+        assert!(json.get("feedback").is_none());
+        assert!(matches!(
+            result(root.path(), &id).unwrap().unwrap().status,
+            Status::Skipped
+        ));
+        assert!(matches!(
+            skip(root.path(), &id).unwrap().status,
+            Status::Skipped
+        ));
+        assert!(list(root.path()).unwrap()[0].skipped);
+        assert!(
+            submit(
+                root.path(),
+                &id,
+                Feedback {
+                    head: request.source.head,
+                    comments: vec![],
+                    summary: Some("Not sent".into()),
+                    thread_states: vec![]
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(dir.join("request.json")).unwrap(), original);
+    }
+    #[test]
     fn completion_is_explicit_and_cannot_overwrite_previous_feedback() {
         let root = tempfile::tempdir().unwrap();
         let id = Uuid::new_v4().to_string();
@@ -837,7 +917,7 @@ mod tests {
         feedback.thread_states[0].line = 2;
         let completed = submit(root.path(), &id, feedback.clone()).unwrap();
         assert!(matches!(
-            completed.feedback.thread_states[0].state,
+            completed.feedback.as_ref().unwrap().thread_states[0].state,
             ThreadStatus::Resolved
         ));
         assert!(submit(root.path(), &id, feedback).is_err());
@@ -846,6 +926,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .feedback
+                .unwrap()
                 .comments
                 .len(),
             1

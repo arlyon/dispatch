@@ -18,6 +18,7 @@ const cwd=path.resolve(__dirname,'..'),port=process.env.DISPATCH_TEST_PORT||'147
    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:cb=>{const id=next++;callbacks.set(id,cb);return id;},invoke:async(command,args)=>{
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}
     if(command==='plugin:event|unlisten')return;
+    if(command==='pr_dispositions')return [];
     if(command==='github_source')return {query:'Private fixture',items:[],heads:[],total:0,partial:false,polling:false,lastSuccess:1,error:null};
     if(command==='desktop_bootstrap')return {checkpoint:null,review:null};
     if(['desktop_ready','desktop_checkpoint','desktop_hide','desktop_quit'].includes(command))return;

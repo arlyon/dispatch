@@ -18,6 +18,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}if(command==='plugin:event|unlisten')return;
     if(command==='desktop_bootstrap')return {checkpoint:null,review:null};
     if(['desktop_ready','desktop_checkpoint','desktop_checkpoint_failed','desktop_hide','desktop_quit'].includes(command))return;
+    if(command==='pr_dispositions')return [];
     if(command==='github_source'){if(window.__pauseSources)await new Promise(resolve=>(window.__sourceWaiters??=[]).push(resolve));return structuredClone(window.__source);}
     if(command==='list_reviews'){const entries=reviews.map((r,i)=>({id:r.id,title:r.title,source:r.source,fileCount:r.files.length,complete:r.id==="archive"||Boolean(results[r.id]),intakeAt:i+1}));if(window.__holdQueue){window.__holdQueue=false;window.__heldQueuePending=true;await new Promise(resolve=>window.__releaseHeldQueue=resolve);}return entries;}
     if(command==='open_review')return reviews.find(r=>r.id===args.id);
@@ -46,10 +47,10 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
   const order=[request.id,...[42,43,44].map(n=>`https://github.com/carpe-lab/repo/pull/${n}`)];
   for(const id of order.slice(1)){await press('Meta+ArrowDown');assert.equal(await focused(),id);}
   await press('Control+ArrowDown');assert.equal(await focused(),order.at(-1));
-  await page.locator('.archive-section > summary').click();await page.evaluate(()=>document.activeElement.blur());
+  await page.locator('.archive-section:not(.hidden-pr-section) > summary').click();await page.evaluate(()=>document.activeElement.blur());
   await press('Meta+ArrowUp');assert.equal(await focused(),'archive');
   await press('Control+ArrowUp');assert.equal(await focused(),order.at(-1));
-  await page.locator('.archive-section > summary').click();await page.evaluate(()=>document.activeElement.blur());await press('Meta+ArrowUp');assert.equal(await focused(),order.at(-1));
+  await page.locator('.archive-section:not(.hidden-pr-section) > summary').click();await page.evaluate(()=>document.activeElement.blur());await press('Meta+ArrowUp');assert.equal(await focused(),order.at(-1));
   await page.getByRole('textbox',{name:'Search reviews'}).fill('Remote 43');await page.evaluate(()=>document.activeElement.blur());await press('Control+ArrowDown');assert.equal(await focused(),order[2]);
   for(const selector of ['input','textarea','select','div[contenteditable]','div.cm-editor','section.quiz-panel','div[role=dialog]']){
    await page.evaluate(selector=>{const el=document.createElement(selector.split(/[.[]/)[0]);if(selector.includes('contenteditable'))el.contentEditable='true';if(selector.includes('.'))el.className=selector.split('.')[1];if(selector.includes('role='))el.setAttribute('role','dialog');el.tabIndex=0;el.id='guard';document.body.append(el);el.focus();},selector);
@@ -58,6 +59,25 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
   for(const flags of [{altKey:true},{shiftKey:true}])assert.equal(await page.evaluate(flags=>{const e=new KeyboardEvent('keydown',{key:'ArrowDown',metaKey:true,bubbles:true,cancelable:true,...flags});document.body.dispatchEvent(e);return e.defaultPrevented;},flags),false);
   assert.ok(await page.evaluate(()=>window.__cards.every(el=>el.isConnected&&[...document.querySelectorAll('[data-card-key]')].includes(el))));
   assert.deepEqual(await page.evaluate(()=>window.__captures),[]);assert.deepEqual(await page.evaluate(()=>window.__models),[]);assert.equal(await page.evaluate(()=>document.querySelector('.workspace')?.scrollTop),await page.evaluate(()=>window.__workspace));assert.deepEqual(errors,[]);
-  console.log('PASS real Inbox DOM: Local→Remote→expanded Archive, hidden/collapsed skipped, both modifiers, clamping, editor/quiz/dialog guards, same nodes; no capture/model/workspace scroll');
+  await page.getByRole('textbox',{name:'Search reviews'}).fill('');
+  const local=page.locator(`[data-card-key="${request.id}"]`),archive=page.locator('[data-card-key="archive"]');
+  await page.locator('.archive-section:not(.hidden-pr-section) > summary').click();
+  assert.equal(await local.locator('.pr-expand-toggle').getAttribute('aria-expanded'),'true');
+  await archive.locator('.pr-summary').click();
+  await page.waitForFunction(()=>document.querySelector('[data-card-key="archive"]').classList.contains('is-current'));
+  assert.equal(await local.locator('.pr-expand-toggle').getAttribute('aria-expanded'),'false');
+  assert.equal(await local.locator('.pr-file-accordion').count(),0);
+  assert.equal(await archive.locator('.pr-expand-toggle').getAttribute('aria-expanded'),'true');
+  await local.locator('.pr-summary').click();
+  await page.waitForFunction(id=>document.querySelector(`[data-card-key="${id}"]`).classList.contains('is-current'),request.id);
+  assert.equal(await archive.locator('.pr-expand-toggle').getAttribute('aria-expanded'),'false');
+  assert.equal(await archive.locator('.pr-file-accordion').count(),0);
+  assert.equal(await local.locator('.pr-expand-toggle').getAttribute('aria-expanded'),'true');
+  await local.locator('.pr-expand-toggle').click();
+  assert.equal(await local.locator('.pr-expand-toggle').getAttribute('aria-expanded'),'false');
+  await local.locator('.pr-expand-toggle').click();
+  assert.equal(await local.locator('.pr-expand-toggle').getAttribute('aria-expanded'),'true');
+  assert.deepEqual(errors,[]);
+  console.log('PASS real Inbox DOM: card navigation guards; selecting another card collapses the previous cached card; selected files still toggle');
  }finally{await browser?.close();server.kill();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

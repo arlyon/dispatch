@@ -12,12 +12,13 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
    window.__forcedFinishes=0;const animate=Element.prototype.animate;
    Element.prototype.animate=function(...args){const animation=animate.apply(this,args);if(this.matches('.pr-accordion-card,.remote-divider')){const finish=animation.finish.bind(animation);animation.finish=()=>{window.__forcedFinishes++;return finish();};}return animation;};
    window.__source={query:'Approved query',items:[44,43,42].map(n=>({url:`https://github.com/carpe-lab/repo/pull/${n}`,repo:'carpe-lab/repo',number:n,title:`Remote ${n}`,author:'someone',updatedAt:'2026-10-22T00:00:00Z',createdAt:`2026-10-${n-25}T00:00:00Z`})),heads:[],total:3,partial:false,polling:false,lastSuccess:1,error:null};
-   window.__captures=[];window.__models=[];window.__submits=[];window.__head='b';window.__fileCount=2;
+   window.__captures=[];window.__pending={};window.__models=[];window.__submits=[];window.__head='b';window.__fileCount=2;
    window.__emitCapture=patch=>{const id=listeners.get('github-capture');callbacks.get(id)?.({event:'github-capture',payload:{...window.__capture,...patch}});};
    window.__TAURI_INTERNALS__={metadata:{currentWindow:{label:'main'},currentWebview:{label:'main'}},transformCallback:cb=>{const id=next++;callbacks.set(id,cb);return id;},invoke:async(command,args)=>{
     if(command==='plugin:event|listen'){listeners.set(args.event,args.handler);return next++;}if(command==='plugin:event|unlisten')return;
     if(command==='desktop_bootstrap')return {checkpoint:null,review:null};
     if(['desktop_ready','desktop_checkpoint','desktop_checkpoint_failed','desktop_hide','desktop_quit'].includes(command))return;
+    if(command==='pr_dispositions')return [];
     if(command==='github_source'){if(window.__pauseSources)await new Promise(resolve=>(window.__sourceWaiters??=[]).push(resolve));return structuredClone(window.__source);}
     if(command==='list_reviews'){const entries=reviews.map((r,i)=>({id:r.id,title:r.title,source:r.source,fileCount:r.files.length,complete:Boolean(results[r.id]),intakeAt:i+1}));if(window.__holdQueue){window.__holdQueue=false;window.__heldQueuePending=true;await new Promise(resolve=>window.__releaseHeldQueue=resolve);}return entries;}
     if(command==='open_review')return reviews.find(r=>r.id===args.id);
@@ -27,7 +28,7 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
     if(command==='list_review_agents')return [];
     if(command==='start_review_agent'){window.__models.push(args);throw Error('No automatic model');}
     if(command==='open_github_pr'){
-     const head=window.__head;window.__capture=args;window.__captures.push(args);await new Promise((resolve,reject)=>{window.__finishCapture=resolve;window.__failCapture=()=>reject(Error('Capture failed fixture'));});
+     const head=window.__head;window.__capture=args;window.__captures.push(args);await new Promise((resolve,reject)=>{window.__finishCapture=resolve;window.__failCapture=()=>reject(Error('Capture failed fixture'));window.__pending[args.url]={finish:resolve,fail:window.__failCapture,args};});
      let r=reviews.find(r=>r.source.prUrl===args.url&&r.source.head===head.repeat(40));
      if(!r){r={...request,id:crypto.randomUUID(),title:`Captured ${args.url.split('/').at(-1)}`,source:{...request.source,prUrl:args.url,repo:'/private/tmp/mock-review',head:head.repeat(40)},files:request.files.slice(0,window.__fileCount)};reviews.push(r);}return r;
     }
@@ -38,6 +39,29 @@ const request=JSON.parse(fs.readFileSync(process.argv[2],'utf8'));request.files=
    }};
   },request);
   const card=url=>page.locator(`.inbox-card-stack [data-card-key="${url}"]`),url='https://github.com/carpe-lab/repo/pull/43';
+  await page.goto('http://127.0.0.1:14694');await page.getByRole('textbox',{name:'Final summary',exact:true}).waitFor();
+  // Independent pulls overlap; completion order and failures cannot steal selection or progress.
+  const a='https://github.com/carpe-lab/repo/pull/42',b=url,c='https://github.com/carpe-lab/repo/pull/44';
+  await page.getByRole('textbox',{name:'Final summary',exact:true}).fill('Keep local draft');
+  await card(a).locator('.pr-summary').click();await page.waitForFunction(()=>window.__captures.length===1);
+  await card(b).locator('.pr-summary').click();await page.waitForFunction(()=>window.__captures.length===2);
+  assert.equal(await page.getByRole('region',{name:'Preparing review',exact:true}).count(),2);
+  assert.ok(await card(a).locator('.pr-summary').isDisabled());assert.ok(await card(c).locator('.pr-summary').isEnabled());
+  await page.evaluate(([a,b])=>{window.__emitCapture({...window.__pending[a].args,phase:'files',done:1,total:2});window.__emitCapture({...window.__pending[b].args,phase:'clone'});},[a,b]);
+  await card(a).getByText('1 / 2 files',{exact:true}).waitFor();await card(b).locator('[data-step=clone][aria-current=step]').waitFor();
+  await page.evaluate(b=>window.__pending[b].finish(),b);await card(b).getByText('Files changed (2)',{exact:true}).waitFor();
+  assert.equal(await card(b).getAttribute('class').then(s=>s.includes('is-current')),true);
+  await page.evaluate(a=>window.__pending[a].fail(),a);
+  await card(a).locator('.pr-summary').waitFor();await page.waitForFunction(()=>!document.querySelector('[data-card-key="https://github.com/carpe-lab/repo/pull/42"]').classList.contains('is-preparing'));
+  assert.ok(await card(a).locator('.pr-summary').isEnabled());assert.ok(await card(b).getByText('Files changed (2)',{exact:true}).isVisible());
+  await card(a).locator('.pr-summary').click();await page.waitForFunction(()=>window.__captures.length===3);
+  await card(c).locator('.pr-summary').click();await page.waitForFunction(()=>window.__captures.length===4);
+  await page.evaluate(a=>window.__pending[a].finish(),a);await card(a).getByText('Files changed (2)',{exact:true}).waitFor();
+  assert.ok((await card(b).getAttribute('class')).includes('is-current'),'older completion cannot take selection from the newer requested pull');
+  await card(request.id).locator('.pr-summary').click();await page.waitForFunction(()=>document.querySelector('#review-summary')?.value==='Keep local draft');
+  await page.evaluate(c=>window.__pending[c].finish(),c);await card(c).getByText('Files changed (2)',{exact:true}).waitFor();
+  assert.equal(await page.locator('.pr-accordion-card.is-current').getAttribute('data-card-key'),request.id);
+  console.log('PASS overlapping pulls: independent progress, duplicate disable, failure isolation/retry, out-of-order completion, manual navigation and draft retention');
   await page.goto('http://127.0.0.1:14694');await page.getByRole('textbox',{name:'Final summary',exact:true}).waitFor();
   const retry='https://github.com/carpe-lab/repo/pull/42';await card(retry).evaluate(el=>window.__retryCard=el);await card(url).evaluate(el=>window.__successCard=el);
   await card(retry).locator('.pr-summary').click();await page.waitForFunction(()=>window.__captures.length===1);await page.evaluate(()=>window.__failCapture());await page.locator('.error-banner').filter({hasText:'Capture failed fixture'}).waitFor();

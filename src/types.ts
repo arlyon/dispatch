@@ -32,11 +32,12 @@ export type ReviewSummary = {
 	intakeAt?: number;
 	checkoutReady?: boolean;
 	complete: boolean;
+	skipped?: boolean;
 };
 export type ReviewContext = { guide: string; comments: Comment[]; owner?: "caller" | "app"; reviewerEnabled?: boolean };
 export type ReviewResult = {
-	version: number; requestId: string; status: "complete";
-	feedback: { head: string; comments: Comment[]; summary: string | null; threadStates?: ThreadUpdate[] };
+	version: number; requestId: string; status: "complete" | "skipped";
+	feedback?: { head: string; comments: Comment[]; summary: string | null; threadStates?: ThreadUpdate[] };
 };
 export type CommentPlacement = "auto" | "inline" | "beside";
 export type PendingComment = CommentAnchor & { body: string; editingIndex?:number };

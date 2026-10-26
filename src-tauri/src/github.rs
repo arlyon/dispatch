@@ -174,7 +174,16 @@ pub struct GitHub {
     head_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     head_wake: Arc<tokio::sync::Notify>,
     shutdown: tokio::sync::watch::Sender<bool>,
-    pub(crate) opening: tokio::sync::Mutex<()>,
+    captures: Mutex<std::collections::HashSet<String>>,
+}
+struct CaptureGuard<'a> {
+    captures: &'a Mutex<std::collections::HashSet<String>>,
+    url: String,
+}
+impl Drop for CaptureGuard<'_> {
+    fn drop(&mut self) {
+        self.captures.lock().unwrap().remove(&self.url);
+    }
 }
 impl Default for GitHub {
     fn default() -> Self {
@@ -184,11 +193,21 @@ impl Default for GitHub {
             head_task: Mutex::new(None),
             head_wake: Arc::new(tokio::sync::Notify::new()),
             shutdown: tokio::sync::watch::channel(false).0,
-            opening: tokio::sync::Mutex::new(()),
+            captures: Mutex::new(std::collections::HashSet::new()),
         }
     }
 }
 impl GitHub {
+    fn begin_capture(&self, url: &str) -> Result<CaptureGuard<'_>, String> {
+        let url = crate::canonical_pr_url(url)?;
+        if !self.captures.lock().unwrap().insert(url.clone()) {
+            return Err("This PR is already being pulled".into());
+        }
+        Ok(CaptureGuard {
+            captures: &self.captures,
+            url,
+        })
+    }
     pub fn start(&self) {
         let root = crate::reviews::root();
         if let Err(error) = &root {
@@ -239,10 +258,19 @@ impl GitHub {
                     state.lock().unwrap().heads.clear();
                     continue;
                 };
-                let urls: std::collections::BTreeSet<_> = requests
+                let mut urls: std::collections::BTreeSet<_> = requests
                     .iter()
                     .filter_map(|request| request.source.pr_url.clone())
                     .collect();
+                // Revision-scoped ignores must observe new heads even before capture.
+                if let Ok(dispositions) = crate::dispositions::list(&root) {
+                    urls.extend(
+                        dispositions
+                            .into_iter()
+                            .filter(|rule| rule.head.is_some())
+                            .map(|rule| rule.url),
+                    );
+                }
                 {
                     let mut state = state.lock().unwrap();
                     state.heads.retain(|head| urls.contains(&head.url));
@@ -261,7 +289,7 @@ impl GitHub {
                     }
                 }
                 let urls: Vec<_> = urls.into_iter().collect();
-                // Only materialized requests, bounded by the existing 50-request listing.
+                // Materialized reviews and explicit revision-ignore rules only.
                 // Four concurrent, timed GETs; dropping this owner aborts their children.
                 for batch in urls.chunks(4) {
                     let mut tasks = tokio::task::JoinSet::new();
@@ -303,6 +331,7 @@ impl GitHub {
         with_checkout: bool,
         mut progress: impl FnMut(crate::github_snapshot::Progress),
     ) -> Result<crate::reviews::ReviewRequest, String> {
+        let _capture = self.begin_capture(url)?;
         let mut order = None;
         let mut observed = false;
         let observe = |mut update: crate::github_snapshot::Progress| {
@@ -462,7 +491,7 @@ async fn observe_head(state: &Arc<Mutex<SourceState>>, binary: &str, url: &str) 
     let head = read_head(binary, url).await;
     state.lock().unwrap().accept_head(order, head);
 }
-async fn read_head(binary: &str, input: &str) -> HeadState {
+pub(crate) async fn read_head(binary: &str, input: &str) -> HeadState {
     let result = async {
         let url = crate::canonical_pr_url(input)?;
         let path = url
@@ -722,6 +751,26 @@ mod tests {
     use super::*;
     use crate::github_test_support::{FakeGh, page, reply};
     use serde_json::{Value, json};
+
+    #[test]
+    fn captures_allow_distinct_prs_and_release_duplicate_guard_on_drop() {
+        let github = GitHub::default();
+        let first = "https://github.com/carpe-lab/repo/pull/42";
+        let second = "https://github.com/carpe-lab/repo/pull/43";
+        let a = github.begin_capture(first).unwrap();
+        let b = github.begin_capture(second).unwrap();
+        assert!(
+            github
+                .begin_capture(&format!("{first}?diff=split"))
+                .is_err()
+        );
+        assert!(github.begin_capture(second).is_err());
+        drop(a); // Also runs when a future is cancelled or fails.
+        let _retry = github.begin_capture(first).unwrap();
+        assert!(github.begin_capture(second).is_err());
+        drop(b);
+        assert!(github.begin_capture(second).is_ok());
+    }
 
     fn capture_plan(head: &str) -> Vec<Value> {
         vec![

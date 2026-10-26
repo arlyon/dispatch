@@ -25,6 +25,7 @@ const port=process.env.DISPATCH_TEST_PORT||'14691',origin=`http://127.0.0.1:${po
     if(command==='desktop_quit'){window.__quitCalls.push(args);return;}
     if(command==='plugin:window|close'){window.__closeCalls.push(args);window.__events.push('close');if(window.__delayClose)await new Promise(r=>window.__releaseClose=r);if(window.__failClose)throw Error('Simulated native close failure');await callbacks.get(listeners.get('tauri://close-requested'))({event:'tauri://close-requested',id:1,payload:{}});return;}
     if(command==='plugin:window|destroy'){window.__destroyCalls.push(args);return;}
+    if(command==='pr_dispositions')return [];
     if(command==='github_source'){
      if(q.has('source-error'))throw Error('Source IPC error');
      if(q.get('freshness')==='source'&&window.__submits.length){if(!window.__postSourcePending){const old=structuredClone(window.__source);window.__postSourcePending=true;await new Promise(r=>window.__releaseOldSource=r);window.__oldSourceDelivered=true;return old;}window.__source={...window.__source,items:[{...pr,url:pr.url.replace('/42','/43'),number:43}],total:1};}
