@@ -30,8 +30,9 @@ const anchorKey=(anchor:CommentAnchor)=>JSON.stringify([anchor.path,anchor.side,
 export default function App(){
   const [queue,setQueue]=createSignal<ReviewSummary[]>([]);
   const [github,setGithub]=createSignal<GitHubSource>();
-  const [githubOpening,setGithubOpening]=createSignal<string>();
-  const [capture,setCapture]=createSignal<CaptureProgress>();
+  const [captures,setCaptures]=createSignal<Record<string,CaptureProgress>>({});
+  const githubOpening=()=>Object.keys(captures()).length>0;
+  const clearCapture=(url:string)=>setCaptures(all=>{const next={...all};delete next[url];return next;});
   let animateInbox:(change:()=>void)=>void=change=>change();
   async function refreshSource(){
     const sequence=++sourceSequence;
@@ -185,20 +186,20 @@ export default function App(){
   }
   async function openGithub(url:string){
     if(quiz()||quizStarting()){setError("End the quiz before opening another review.");return;}
-    if(githubOpening())return;
+    if(captures()[url])return;
     if(queue().some(review=>review.source.prUrl===url&&draftHasFeedback(drafts()[review.id]))){setError("Submit or explicitly discard your notes on this PR before refreshing its branch. Earlier feedback stays with its original code.");return;}
-    const sequence=++openSequence,captureId=crypto.randomUUID();opening=url;setGithubOpening(url);setError("");
-    animateInbox(()=>setCapture({url,captureId,phase:"metadata"}));
+    const sequence=++openSequence,captureId=crypto.randomUUID();opening=url;setError("");
+    animateInbox(()=>setCaptures(all=>({...all,[url]:{url,captureId,phase:"metadata"}})));
     try {
       const review=await invoke<ReviewRequest>("open_github_pr",{url,captureId});
       snapshots.set(review.id,review);
       if(disposed)return;
       refreshSequence++; // Publication supersedes queue reads started before these files existed.
-      animateInbox(()=>batch(()=>{setCapture(undefined);setQueue(all=>[...all.filter(item=>item.id!==review.id),{id:review.id,title:review.title,source:review.source,fileCount:review.files.length,checkoutReady:true,complete:all.find(item=>item.id===review.id)?.complete||false,intakeAt:Date.now()}]);}));
+      animateInbox(()=>batch(()=>{clearCapture(url);setQueue(all=>[...all.filter(item=>item.id!==review.id),{id:review.id,title:review.title,source:review.source,fileCount:review.files.length,checkoutReady:true,complete:all.find(item=>item.id===review.id)?.complete||false,intakeAt:Date.now()}]);}));
       if(sequence!==openSequence)return;
       await open(review.id);
-    } catch(error){if(!disposed&&sequence===openSequence)setError(`Cannot capture PR: ${String(error)}`);}
-    finally {if(opening===url)opening=undefined;if(!disposed){animateInbox(()=>setCapture(undefined));setGithubOpening(undefined);}}
+    } catch(error){if(!disposed)setError(`Cannot capture PR ${url}: ${String(error)}`);}
+    finally {if(opening===url)opening=undefined;if(!disposed)animateInbox(()=>clearCapture(url));}
   }
   async function openPRInBrowser(){
     const review=request();if(!review?.source.prUrl)return;
@@ -356,12 +357,12 @@ export default function App(){
     const desktopStops:(()=>void)[]=[];
     if("__TAURI_INTERNALS__"in window){
       void listen<CaptureProgress>("github-capture",event=>{
-        const update=event.payload,readOrder=update.readOrder;if(disposed||capture()?.captureId!==update.captureId)return;
+        const update=event.payload,readOrder=update.readOrder;if(disposed||captures()[update.url]?.captureId!==update.captureId)return;
         if(update.phase==="metadata"&&typeof readOrder==="number"){
           sourceSequence++; // Reject cache replies issued before this actual metadata-read floor.
           setGithub(previous=>previous?{...previous,heads:previous.heads?.map(head=>head.url===update.url&&(head.readOrder??0)<readOrder?{...head,head:null,checking:true,error:null,readOrder}:head)}:previous);
         }
-        setCapture(update);
+        setCaptures(all=>({...all,[update.url]:update}));
       }).then(stop=>{if(disposed)stop();else stopCapture=stop;}).catch(()=>{});
       const quizEvents=listen<QuizState>("review-quiz",event=>acceptQuiz(event.payload)).then(stop=>{if(disposed)stop();else stopQuiz=stop;});
       const agentEvents=listen<AgentState>("review-agent",event=>acceptAgent(event.payload)).then(async stop=>{if(disposed){stop();return;}stopAgents=stop;for(const state of await invoke<AgentState[]>("list_review_agents"))acceptAgent(state);});
@@ -411,7 +412,7 @@ export default function App(){
   });
   return <WorkspaceShell inboxVisible={inboxVisible()} chatVisible={Boolean(quiz())||chatVisible()} onWorkspace={element=>workspace=element}
     topbar={<TopBar updatesBlocked={Boolean(restoreFailed||hasFeedback()||busy()||githubOpening()||quiz()||quizStarting())} placement={placement()} onPlacement={setPlacement} canBeside={gutterRoom()} stackDepth={stackDepth()} onStackDepth={setStackDepth} wide={useGutter()} request={request()} inboxVisible={inboxVisible()} chatVisible={chatVisible()} complete={complete()} busy={busy()} submitting={operation()==="submit"} commentCount={comments().length} hasSummary={Boolean(summary().trim())} onInbox={()=>setInboxVisible(!inboxVisible())} onChat={()=>{if(!quiz())setChatVisible(!chatVisible());}} onSubmit={()=>void submit()}/>}
-    inbox={<InboxPanel github={github()} capture={capture()} onMotion={transition=>animateInbox=transition} cachedRequest={id=>snapshots.get(id)} sourceDisabled={Boolean(quiz())||quizStarting()} onSelectPR={url=>void openGithub(url)} reviews={queue()} request={request()} selectedId={request()?.id} activePath={path()} filter={filter()} agents={agents()} readReady={request()?.files.every(file=>Boolean(identities()[file.path]))||false} readPaths={readPaths()} findingCounts={findingCounts()} busy={busy()} onSelect={(id,file)=>void open(id).then(()=>{if(file&&request()?.id===id)selectFile(file);})} onSelectFile={selectFile} onFilter={setFilter} onRead={markRead} onRefresh={()=>void refresh()} onNew={()=>void selfReview()}/>}
+    inbox={<InboxPanel github={github()} captures={captures()} onMotion={transition=>animateInbox=transition} cachedRequest={id=>snapshots.get(id)} sourceDisabled={Boolean(quiz())||quizStarting()} onSelectPR={url=>void openGithub(url)} reviews={queue()} request={request()} selectedId={request()?.id} activePath={path()} filter={filter()} agents={agents()} readReady={request()?.files.every(file=>Boolean(identities()[file.path]))||false} readPaths={readPaths()} findingCounts={findingCounts()} busy={busy()} onSelect={(id,file)=>void open(id).then(()=>{if(file&&request()?.id===id)selectFile(file);})} onSelectFile={selectFile} onFilter={setFilter} onRead={markRead} onRefresh={()=>void refresh()} onNew={()=>void selfReview()}/>}
     chat={<div class="quiz-panel-host"><div class="original-chat" classList={{"quiz-underneath":Boolean(quiz())}} inert={Boolean(quiz())}><ChatPanel agentQuestion={currentDraft().agentQuestion||""} agentSending={agentSending()} onAgentQuestion={setAgentQuestion} onAskAgent={()=>void askAgent()} quizSummaries={quizSummaries().filter(summary=>summary.requestId===request()?.id&&summary.head===request()?.source.head)} onQuiz={()=>void startQuiz()} quizDisabled={busy()||quizStarting()} quizStarting={quizStarting()} attachments={attachmentLinks()} uploading={uploads()>0} groups={reviewGroups().filter(group=>group.messages.some(message=>message.author!=="Pi"))} onReply={reply} onState={setThreadState} stateCount={Object.keys(currentDraft().threadStates).length} context={context()} onStartReview={()=>{const review=request();if(review)void startAgent(review);}} request={request()} agent={activeAgent()} complete={complete()} submitting={operation()==="submit"} error={error()} comments={comments()} pending={complete()?[]:pending()} summary={summary()} dismissed={dismissedForReview()} unsent={complete()?currentDraft():undefined} onSummary={value=>updateDraft(draft=>({...draft,summary:value}))} onJump={jumpTo} onResume={pending=>jumpTo(pending,true)} onRemove={removeComment} onClose={()=>setChatVisible(false)}/></div><Show when={quiz()}>{state=><QuizPanel state={state()} onDone={quizDone} onJump={jumpTo}/>}</Show></div>}
     footer={<footer class="statusbar"><span class="status-dot"/><span>{operation()==="snapshot"?"Creating local snapshot…":request()?`${readPaths().size}/${request()!.files.length} files read`:"Local review inbox"}</span><span class="status-divider"/><span class="status-file">{path()}</span></footer>}
   >

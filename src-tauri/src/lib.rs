@@ -128,7 +128,6 @@ async fn open_github_pr(
     let result = tokio::select! {
         _ = shutdown.changed() => Err("Dispatch is closing".into()),
         result = async {
-            let _opening = github.opening.lock().await;
             tokio::time::timeout(std::time::Duration::from_secs(300), github.capture_checkout("gh", &root, &url, |progress| {
                 let _ = app.emit("github-capture", serde_json::json!({"url":url,"captureId":capture_id,"phase":progress.phase,"readOrder":progress.read_order,"head":progress.head,"done":progress.done,"total":progress.total}));
             })).await.map_err(|_| "PR checkout timed out".to_string())?
